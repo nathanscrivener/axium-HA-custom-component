@@ -1,20 +1,16 @@
 """Axium amplifier controller."""
 import asyncio
 import logging
-import json
-import os
 from typing import Optional
 
 import serial_asyncio
 
 _LOGGER = logging.getLogger("custom_components.axium")
 
-STATE_FILE = "axium_state.json"
-
 class AxiumController:
     """Interface to communicate with the Axium amplifier."""
 
-    def __init__(self, port: str, baudrate: int = 9600, config_dir: str = None):
+    def __init__(self, port: str, baudrate: int = 9600):
         """Initialize the controller."""
         self._port = port
         self._baudrate = baudrate
@@ -23,38 +19,6 @@ class AxiumController:
         self._lock = asyncio.Lock()
         self._state_cache = {}
         self._connected = False
-        self._config_dir = config_dir
-        self._state_file_path = os.path.join(self._config_dir, STATE_FILE) if self._config_dir else None
-        self._load_state()
-
-
-    def _load_state(self):
-        """Load the state from the json file."""
-        if self._state_file_path and os.path.exists(self._state_file_path):
-            try:
-                with open(self._state_file_path, "r") as f:
-                    self._state_cache = json.load(f)
-                _LOGGER.debug("Loaded state from file: %s", self._state_cache)
-            except (FileNotFoundError, json.JSONDecodeError):
-                _LOGGER.warning("State file not found or invalid, starting with empty state.")
-                self._state_cache = {}
-        else:
-             _LOGGER.debug("No state file found, starting with empty state.")
-             self._state_cache = {}
-
-
-    def _save_state(self):
-        """Save the state to the json file."""
-        if self._state_file_path:
-            try:
-                with open(self._state_file_path, "w") as f:
-                    json.dump(self._state_cache, f, indent=2)
-                _LOGGER.debug("Saved state to file: %s", self._state_cache)
-            except Exception as e:
-                _LOGGER.error("Error saving state: %s", e)
-        else:
-             _LOGGER.debug("No config directory, so not saving state.")
-
 
     async def connect(self) -> None:
         """Connect to the amplifier."""
@@ -99,7 +63,6 @@ class AxiumController:
         _LOGGER.debug("Setting power for zone %s to %s. Command bytes: %s", zone, state, command)
         if await self._send_command(command):
             self._state_cache.setdefault(zone, {})["power"] = state
-            self._save_state()
             return True
         return False
 
@@ -108,7 +71,6 @@ class AxiumController:
         command = bytes([0x02, zone, 0x00 if state else 0x01])
         if await self._send_command(command):
             self._state_cache.setdefault(zone, {})["mute"] = state
-            self._save_state()
             return True
         return False
 
@@ -118,7 +80,6 @@ class AxiumController:
         command = bytes([0x04, zone, axium_volume])
         if await self._send_command(command):
             self._state_cache.setdefault(zone, {})["volume"] = volume
-            self._save_state()
             return True
         return False
 
@@ -127,7 +88,6 @@ class AxiumController:
         command = bytes([0x03, zone, source])
         if await self._send_command(command):
             self._state_cache.setdefault(zone, {})["source"] = source
-            self._save_state()
             return True
         return False
 

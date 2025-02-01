@@ -40,7 +40,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         serial_port = conf[CONF_SERIAL_PORT]
         zones = conf[CONF_ZONES]
 
-        controller = AxiumController(serial_port, config_dir=hass.config.path()) # Fixed this line
+        controller = AxiumController(serial_port)
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN]["controller"] = controller
         hass.data[DOMAIN]["config"] = {

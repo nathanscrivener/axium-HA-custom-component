@@ -18,11 +18,10 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, ZONES, SOURCES
 from .controller import AxiumController
-
-_LOGGER = logging.getLogger("custom_components.axium")
 
 async def async_setup_platform(
     hass: HomeAssistant,
@@ -48,7 +47,7 @@ async def async_setup_platform(
     async_add_entities(entities)
     _LOGGER.debug("async_add_entities called with %s entities", len(entities))
 
-class AxiumZone(MediaPlayerEntity):
+class AxiumZone(MediaPlayerEntity, RestoreEntity):
     """Representation of an Axium amplifier zone."""
 
     _attr_has_entity_name = True
@@ -60,14 +59,11 @@ class AxiumZone(MediaPlayerEntity):
         self._attr_unique_id = f"axium_{name}"
         self._zone_id = zone_id
         
-        # Attempt to get last known state, default to STATE_OFF
-        last_state = self._controller._state_cache.get(zone_id, {})
-        self._attr_state = STATE_ON if last_state.get("power") else STATE_OFF
-        self._attr_volume_level = last_state.get("volume", 0) / 100.0 if last_state.get("volume") else 0.5
+        # Default state
+        self._attr_state = STATE_OFF
+        self._attr_volume_level = 0.5
         self._attr_source = None
-        self._attr_is_volume_muted = last_state.get("mute", False) if last_state.get("mute") is not None else False
-
-        self._initial_state_retrieved = False
+        self._attr_is_volume_muted = False
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
@@ -90,8 +86,36 @@ class AxiumZone(MediaPlayerEntity):
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
-        _LOGGER.debug("async_added_to_hass called for %s", self._attr_name)
         await super().async_added_to_hass()
+        _LOGGER.debug("async_added_to_hass called for %s", self._attr_name)
+        
+        last_state = await self.async_get_last_state()
+        if last_state:
+            _LOGGER.debug("Restoring state for %s from last state: %s", self._attr_name, last_state)
+            self._attr_state = last_state.state
+            self._attr_volume_level = last_state.attributes.get("volume_level", 0.5)
+            self._attr_is_volume_muted = last_state.attributes.get("is_volume_muted", False)
+            self._attr_source = last_state.attributes.get("source")
+            
+            # Update controller's state_cache with restored values
+            power = self._attr_state == STATE_ON
+            volume = int(self._attr_volume_level * 100)
+            mute = self._attr_is_volume_muted
+            source_id = None
+            if self._attr_source:
+                for src in SOURCES.values():
+                    if src["name"] == self._attr_source:
+                        source_id = src["id"]
+                        break
+            
+            self._controller._state_cache[self._zone_id] = {
+                "power": power,
+                "volume": volume,
+                "mute": mute,
+                "source": source_id
+            }
+            _LOGGER.debug("Updated controller's state_cache for zone %s: %s", self._zone_id, self._controller._state_cache.get(self._zone_id))
+        
         await self.async_update()
 
     async def async_update(self) -> None:
