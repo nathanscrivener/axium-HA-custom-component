@@ -1,0 +1,11 @@
+{
+    "domain": "axium",
+    "name": "Axium Amplifier",
+    "documentation": "",
+    "dependencies": [],
+    "codeowners": [],
+    "requirements": ["pyserial-asyncio"],
+    "iot_class": "local_push",
+    "version": "1.0.0",
+    "config_flow": false
+}
