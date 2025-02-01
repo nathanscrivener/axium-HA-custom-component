@@ -1,9 +1,8 @@
-"""The Axium integration."""
+"""The Axium Amplifier integration."""
 import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
