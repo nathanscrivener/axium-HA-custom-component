@@ -37,25 +37,26 @@ class AxiumController:
             raise
 
     async def _send_command(self, command_bytes: bytes) -> bool:
-        """Send a command."""
-        if not self._connected:
-            try:
+        """Send a command with detailed error logging."""
+        try:
+            if not self._connected:
                 await self.connect()
-            except Exception as err:
-                _LOGGER.error("Cannot send command - connection failed: %s", err)
-                return False
 
-        async with self._lock:
-            try:
-                encoded = ''.join('{:02X}'.format(b) for b in command_bytes) + '\n'
-                _LOGGER.debug("Sending command: %s. Command Bytes: %s", encoded.strip(), command_bytes)
+            async with self._lock:
+                encoded = ''.join(f"{b:02X}" for b in command_bytes) + '\n'
+                _LOGGER.debug(
+                    "Sending raw command: bytes=%s, encoded='%s'",
+                    command_bytes, encoded.strip()
+                )
                 self._serial_writer.write(encoded.encode('ascii'))
                 return True
-
-            except Exception as err:
-                _LOGGER.error("Error sending command: %s", err)
-                self._connected = False
-                return False
+        except Exception as err:
+            _LOGGER.error(
+                "Failed to send command %s: %s",
+                command_bytes, str(err), exc_info=True
+            )
+            self._connected = False
+            return False
 
     async def set_power(self, zone: int, state: bool) -> bool:
         """Set power state for a zone."""
@@ -95,3 +96,31 @@ class AxiumController:
         """Get the cached state for a zone."""
         _LOGGER.debug("Getting state for zone: %s. State: %s", zone, self._state_cache.get(zone, {}))
         return self._state_cache.get(zone, {})
+
+    async def set_bass(self, zone: int, level: int) -> bool:
+        """Set bass level for a zone (-12 to +12)."""
+        bass_level = min(max(level, -12), 12)
+        bass_byte = bass_level & 0xFF  # Convert to unsigned byte (e.g., -5 → 0xFB)
+        command = bytes([0x05, zone, bass_byte])
+        _LOGGER.debug(
+            "Sending bass command: zone=%s, level=%s → byte=0x%02X",
+            zone, bass_level, bass_byte
+        )
+        success = await self._send_command(command)
+        if success:
+            self._state_cache.setdefault(zone, {})["bass"] = bass_level
+        return success
+
+    async def set_treble(self, zone: int, level: int) -> bool:
+        """Set treble level for a zone (-12 to +12)."""
+        treble_level = min(max(level, -12), 12)
+        treble_byte = treble_level & 0xFF  # Convert to unsigned byte
+        command = bytes([0x06, zone, treble_byte])
+        _LOGGER.debug(
+            "Sending treble command: zone=%s, level=%s → byte=0x%02X",
+            zone, treble_level, treble_byte
+        )
+        success = await self._send_command(command)
+        if success:
+            self._state_cache.setdefault(zone, {})["treble"] = treble_level
+        return success

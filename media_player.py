@@ -138,6 +138,10 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
                         if self._attr_source != source_info["name"]:
                             self._attr_source = source_info["name"]
                         break
+            self._attr_extra_state_attributes = {
+                "bass": state.get("bass", 0),
+                "treble": state.get("treble", 0) }
+
 
     async def async_turn_on(self) -> None:
         """Turn the zone on."""

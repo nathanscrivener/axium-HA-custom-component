@@ -48,6 +48,38 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 "zones": zones
             }
 
+        # ========== ADDED SERVICE HANDLERS ========== #
+        async def handle_set_bass(call):
+            """Handle bass adjustments with validation and error logging."""
+            try:
+                zone_name = call.data["zone"]
+                level = int(call.data["level"])
+                if zone_name not in ZONES:
+                    raise ValueError(f"Invalid zone: {zone_name}")
+                if level < -12 or level > 12:
+                    raise ValueError(f"Bass level out of range (-12 to 12): {level}")
+                
+                zone_id = ZONES[zone_name]
+                _LOGGER.debug("Setting bass for %s (ID: %s) to %s", zone_name, zone_id, level)
+                await controller.set_bass(zone_id, level)
+            except Exception as e:
+                _LOGGER.error("Service axium.set_bass failed: %s", str(e), exc_info=True)
+                raise
+
+        async def handle_set_treble(call):
+            """Handle treble level adjustment."""
+            zone_name = call.data.get("zone")
+            level = call.data.get("level")
+            if zone_name not in ZONES:
+                _LOGGER.error("Invalid zone: %s", zone_name)
+                return
+            await controller.set_treble(ZONES[zone_name], level)
+
+        # Register services
+        hass.services.async_register(DOMAIN, "set_bass", handle_set_bass)
+        hass.services.async_register(DOMAIN, "set_treble", handle_set_treble)
+        # ========== END OF ADDED CODE ========== #
+
         _LOGGER.debug("Before async_load_platform call. DOMAIN is: %s", DOMAIN)
         task = hass.async_create_task(
             hass.helpers.discovery.async_load_platform(
