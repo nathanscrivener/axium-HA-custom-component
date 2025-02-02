@@ -19,9 +19,10 @@ class AxiumController:
         self._lock = asyncio.Lock()
         self._state_cache = {}
         self._connected = False
+        self._reconnect_task = None
 
     async def connect(self) -> None:
-        """Connect to the amplifier."""
+        """Connect to the amplifier with retries."""
         try:
             self._serial_reader, self._serial_writer = await serial_asyncio.open_serial_connection(
                 url=self._port,
@@ -30,10 +31,25 @@ class AxiumController:
             )
             self._connected = True
             _LOGGER.info("Successfully connected to Axium amplifier")
+            if self._reconnect_task:
+                self._reconnect_task.cancel()
+                self._reconnect_task = None
         except Exception as err:
             self._connected = False
-            _LOGGER.error("Failed to connect to Axium amplifier: %s", err)
-            raise
+            _LOGGER.warning("Failed to connect to Axium amplifier: %s. Retrying...", err)
+            if not self._reconnect_task:
+                self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        """Periodically attempt to reconnect."""
+        while True:
+            await asyncio.sleep(10)  # Wait 10 seconds between retries
+            try:
+                await self.connect()
+                if self._connected:
+                    return
+            except Exception as err:
+                _LOGGER.warning("Reconnect attempt failed: %s", err)
 
     async def _send_command(self, command_bytes: bytes) -> bool:
         """Send a command with detailed error logging."""
@@ -53,6 +69,7 @@ class AxiumController:
             self._connected = False
             return False
 
+    # Rest of the methods remain unchanged below this line
     async def set_power(self, zone: int, state: bool) -> bool:
         """Set power state for a zone."""
         command = bytes([0x01, zone, 0x01 if state else 0x00])

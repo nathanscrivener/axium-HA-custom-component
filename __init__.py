@@ -41,11 +41,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     zones = conf[CONF_ZONES]
 
     try:
-        # Initialize and connect to the controller
+        # Initialize controller (connection attempts will happen in background)
         controller = AxiumController(serial_port)
-        await controller.connect()  # Ensure the controller is connected
-    
-    # Store controller and config in hass.data
+        await controller.connect()  # First attempt (errors handled internally)
+
+        # Store controller and config in hass.data
         hass.data[DOMAIN] = {
             "controller": controller,
             "config": {
@@ -53,6 +53,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 "zones": zones
             }
         }
+
         # Register services
         async def handle_set_bass(call):
             """Handle bass adjustments."""
@@ -76,7 +77,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             zone_id = ZONES[zone_name]
             await controller.set_treble(zone_id, level)
 
-        # Register services
         hass.services.async_register(DOMAIN, "set_bass", handle_set_bass)
         hass.services.async_register(DOMAIN, "set_treble", handle_set_treble)
         
