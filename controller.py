@@ -22,7 +22,6 @@ class AxiumController:
 
     async def connect(self) -> None:
         """Connect to the amplifier."""
-        _LOGGER.debug("Attempting to connect to Axium amplifier on port: %s", self._port)
         try:
             self._serial_reader, self._serial_writer = await serial_asyncio.open_serial_connection(
                 url=self._port,
@@ -44,10 +43,6 @@ class AxiumController:
 
             async with self._lock:
                 encoded = ''.join(f"{b:02X}" for b in command_bytes) + '\n'
-                _LOGGER.debug(
-                    "Sending raw command: bytes=%s, encoded='%s'",
-                    command_bytes, encoded.strip()
-                )
                 self._serial_writer.write(encoded.encode('ascii'))
                 return True
         except Exception as err:
@@ -61,7 +56,6 @@ class AxiumController:
     async def set_power(self, zone: int, state: bool) -> bool:
         """Set power state for a zone."""
         command = bytes([0x01, zone, 0x01 if state else 0x00])
-        _LOGGER.debug("Setting power for zone %s to %s. Command bytes: %s", zone, state, command)
         if await self._send_command(command):
             self._state_cache.setdefault(zone, {})["power"] = state
             return True
@@ -94,7 +88,6 @@ class AxiumController:
 
     async def get_zone_state(self, zone: int) -> dict:
         """Get the cached state for a zone."""
-        _LOGGER.debug("Getting state for zone: %s. State: %s", zone, self._state_cache.get(zone, {}))
         return self._state_cache.get(zone, {})
 
     async def set_bass(self, zone: int, level: int) -> bool:
@@ -102,10 +95,6 @@ class AxiumController:
         bass_level = min(max(level, -12), 12)
         bass_byte = bass_level & 0xFF  # Convert to unsigned byte (e.g., -5 → 0xFB)
         command = bytes([0x05, zone, bass_byte])
-        _LOGGER.debug(
-            "Sending bass command: zone=%s, level=%s → byte=0x%02X",
-            zone, bass_level, bass_byte
-        )
         success = await self._send_command(command)
         if success:
             self._state_cache.setdefault(zone, {})["bass"] = bass_level
@@ -116,10 +105,6 @@ class AxiumController:
         treble_level = min(max(level, -12), 12)
         treble_byte = treble_level & 0xFF  # Convert to unsigned byte
         command = bytes([0x06, zone, treble_byte])
-        _LOGGER.debug(
-            "Sending treble command: zone=%s, level=%s → byte=0x%02X",
-            zone, treble_level, treble_byte
-        )
         success = await self._send_command(command)
         if success:
             self._state_cache.setdefault(zone, {})["treble"] = treble_level

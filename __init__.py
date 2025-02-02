@@ -32,7 +32,6 @@ CONFIG_SCHEMA = vol.Schema(
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Axium component."""
     try:
-        _LOGGER.debug("async_setup function called - START")
         if DOMAIN not in config:
             return True
 
@@ -60,7 +59,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     raise ValueError(f"Bass level out of range (-12 to 12): {level}")
                 
                 zone_id = ZONES[zone_name]
-                _LOGGER.debug("Setting bass for %s (ID: %s) to %s", zone_name, zone_id, level)
                 await controller.set_bass(zone_id, level)
             except Exception as e:
                 _LOGGER.error("Service axium.set_bass failed: %s", str(e), exc_info=True)
@@ -79,15 +77,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         hass.services.async_register(DOMAIN, "set_bass", handle_set_bass)
         hass.services.async_register(DOMAIN, "set_treble", handle_set_treble)
         # ========== END OF ADDED CODE ========== #
-
-        _LOGGER.debug("Before async_load_platform call. DOMAIN is: %s", DOMAIN)
+        
         task = hass.async_create_task(
             hass.helpers.discovery.async_load_platform(
                 Platform.MEDIA_PLAYER, DOMAIN, {}, config
             )
         )
-        _LOGGER.debug("After async_load_platform call. Task is: %s", task)
-        _LOGGER.debug("async_setup function called - END")
+
         return True
     except Exception as e:
         _LOGGER.error("Exception in async_setup: %s", e)
