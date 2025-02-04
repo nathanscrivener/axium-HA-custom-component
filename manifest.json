@@ -3,7 +3,7 @@
     "name": "Axium Amplifier",
     "documentation": "",
     "dependencies": [],
-    "codeowners": [],
+    "codeowners": ["nathan.scrivener@gmail.com"],
     "requirements": ["pyserial-asyncio"],
     "iot_class": "local_push",
     "version": "1.0.0",

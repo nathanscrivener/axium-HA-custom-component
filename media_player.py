@@ -29,6 +29,8 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Set up the Axium media player platform."""
+    _LOGGER.info("Setting up Axium media player platform.")
+
     if DOMAIN not in hass.data:
         _LOGGER.error("DOMAIN not in hass.data, exiting async_setup_platform")
         return
@@ -39,8 +41,28 @@ async def async_setup_platform(
     entities = []
     for zone_name in zones:
         if zone_name in ZONES:
+            
             zone_id = ZONES[zone_name]
+            
+            # Initialize the controller's cache for this zone
+            controller._state_cache.setdefault(zone_id, {
+                "power": False,      # Default: Zone is OFF
+                "volume": 50,        # Default: 50% volume
+                "mute": False,       # Default: Not muted
+                "source": None,      # Default: No source selected
+            #    "bass": 0,           # Default: Bass level 0
+            #    "treble": 0          # Default: Treble level 0
+            })
+                        
             entities.append(AxiumZone(controller, zone_name, zone_id))
+        else:
+            _LOGGER.warning(f"Zone {zone_name} not found in ZONES mapping.")
+
+    if not entities:
+        _LOGGER.error("No entities created for Axium media player platform.")
+        return
+
+    _LOGGER.info(f"Adding {len(entities)} Axium media player entities.")
     async_add_entities(entities)
 
 class AxiumZone(MediaPlayerEntity, RestoreEntity):
@@ -54,13 +76,8 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
         self._attr_name = f"Axium {name.replace('_', ' ').title()}"
         self._attr_unique_id = f"axium_{name}"
         self._zone_id = zone_id
+        self.entity_id = f"media_player.axium_{name}"  # Explicit entity ID
         
-        # Default state
-        self._attr_state = STATE_OFF
-        self._attr_volume_level = 0.5
-        self._attr_source = None
-        self._attr_is_volume_muted = False
-
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
         """Flag media player features that are supported."""
@@ -109,7 +126,6 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
             }
         
         await self.async_update()
-
     async def async_update(self) -> None:
         """Retrieve latest state."""
         state = await self._controller.get_zone_state(self._zone_id)
@@ -131,7 +147,6 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
             self._attr_extra_state_attributes = {
                 "bass": state.get("bass", 0),
                 "treble": state.get("treble", 0) }
-
 
     async def async_turn_on(self) -> None:
         """Turn the zone on."""
