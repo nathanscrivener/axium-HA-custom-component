@@ -4,6 +4,7 @@ from typing import Final
 DOMAIN: Final = "axium"
 CONF_SERIAL_PORT: Final = "serial_port"
 CONF_ZONES: Final = "zones"
+REQUIRED_BAUDRATE: Final = 9600
 
 # Define your zones and their hex values
 ZONES = {

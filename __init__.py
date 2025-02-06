@@ -1,15 +1,15 @@
 """The Axium Amplifier integration."""
 import logging
-from .const import DOMAIN, CONF_SERIAL_PORT, CONF_ZONES, ZONES
+import voluptuous as vol
 from typing import Any
 
-import voluptuous as vol
+from .const import DOMAIN, CONF_SERIAL_PORT, CONF_ZONES, ZONES
+
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.discovery import async_load_platform
-
 
 from .controller import AxiumController
 
@@ -34,13 +34,11 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Axium component."""
-    _LOGGER.info("Axium integration setup started.")
-    if DOMAIN not in config:
-        _LOGGER.debug("Axium integration not in config, skipping setup.")
-        return True
+#HA looks for the following function and calls it to set up the integration
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool: 
 
+    _LOGGER.info("Axium integration setup started.")
+    
     conf = config[DOMAIN]
     serial_port = conf.get(CONF_SERIAL_PORT)
     zones = conf.get(CONF_ZONES)
@@ -70,60 +68,29 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             }
         }
 
-        # Register services
+        # Define bass and treble service functions
         
-        _LOGGER.debug("Registering services.")
         async def handle_set_bass(call):
-            #Handle bass adjustments.
             zone_name = call.data.get("zone")
             level = call.data.get("level")
-            if not zone_name or not level:
-                _LOGGER.error("Missing zone or level in service call.")
-                return
-            if zone_name not in ZONES:
-                _LOGGER.error(f"Invalid zone: {zone_name}")
-                return
-            try:
-                level = int(level)
-                if not (-12 <= level <= 12):
-                    _LOGGER.error(f"Bass level out of range (-12 to 12): {level}")
-                    return
-                zone_id = ZONES[zone_name]
-                await controller.set_bass(zone_id, level)
-            except ValueError as e:
-                _LOGGER.error(f"Invalid level value: {e}")
-
+            zone_id = ZONES[zone_name]
+            await controller.set_bass(zone_id, level)
+            
         async def handle_set_treble(call):
-            #Handle treble adjustments.
             zone_name = call.data.get("zone")
             level = call.data.get("level")
-            if not zone_name or not level:
-                _LOGGER.error("Missing zone or level in service call.")
-                return
-            if zone_name not in ZONES:
-                _LOGGER.error(f"Invalid zone: {zone_name}")
-                return
-            try:
-                level = int(level)
-                if not (-12 <= level <= 12):
-                    _LOGGER.error(f"Treble level out of range (-12 to 12): {level}")
-                    return
-                zone_id = ZONES[zone_name]
-                await controller.set_treble(zone_id, level)
-            except ValueError as e:
-                _LOGGER.error(f"Invalid level value: {e}")
+            zone_id = ZONES[zone_name]
+            await controller.set_treble(zone_id, level)
+                
+     
+        # Define the service schema for HA to validate the bass and treble service calls
 
-
-    
-        # Register services
-        _LOGGER.debug("Register bass and treble services.")
-        
-        # Define the service schema
         service_schema = vol.Schema({
             vol.Required("zone"): vol.In(list(ZONES.keys())),  # Convert to list
             vol.Required("level"): vol.All(int, vol.Range(min=-12, max=12))
-        })
+            })
         
+        _LOGGER.debug("Registering bass and treble services.")
         hass.services.async_register(DOMAIN, "set_bass", handle_set_bass, schema=service_schema)
         hass.services.async_register(DOMAIN, "set_treble", handle_set_treble, schema=service_schema)
 

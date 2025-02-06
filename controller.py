@@ -4,13 +4,14 @@ import logging
 from typing import Optional
 
 import serial_asyncio
+from .const import REQUIRED_BAUDRATE # Import the baud rate constant
 
 _LOGGER = logging.getLogger("custom_components.axium")
 
 class AxiumController:
     """Interface to communicate with the Axium amplifier."""
 
-    def __init__(self, port: str, baudrate: int = 9600):
+    def __init__(self, port: str, baudrate: int = REQUIRED_BAUDRATE):
         """Initialize the controller."""
         self._port = port
         self._baudrate = baudrate

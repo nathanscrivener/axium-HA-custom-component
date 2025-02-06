@@ -49,7 +49,7 @@ async def async_setup_platform(
                 "power": False,      # Default: Zone is OFF
                 "volume": 50,        # Default: 50% volume
                 "mute": False,       # Default: Not muted
-                "source": None,      # Default: No source selected
+                "source": SOURCES["aux"]["id"],      # Default: Roon Source
             #    "bass": 0,           # Default: Bass level 0
             #    "treble": 0          # Default: Treble level 0
             })
