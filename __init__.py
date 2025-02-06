@@ -53,7 +53,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         # Initialize the controller
         _LOGGER.debug("Initializing Axium controller.")
         controller = AxiumController(serial_port)
-        # Attempt to connect.  The connect() method now returns True/False.
+        # Attempt to connect.  The connect() method now returns True/False and initializes state.
         if not await controller.connect():
             _LOGGER.error("Failed to connect to Axium controller during setup.")
             return False  # Exit early if the initial connection fails.

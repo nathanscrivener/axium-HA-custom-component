@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 import serial_asyncio
-from .const import REQUIRED_BAUDRATE, ZONES
+from .const import REQUIRED_BAUDRATE, ZONES, SOURCES
 
 _LOGGER = logging.getLogger("custom_components.axium")
 
@@ -22,6 +22,8 @@ class AxiumController:
         self._connected = False
         self._reconnect_task = None
         self._last_attempt = 0  # Time of the last connection attempt
+        self._response_timeout = 2 # seconds for response timeout
+        self.initial_query_complete = asyncio.Event()  # Event to signal completion
 
         # Mapping of main zones to pre-out zones (and vice-versa)
         self._zone_mapping = {}
@@ -52,6 +54,14 @@ class AxiumController:
             if self._reconnect_task:
                 self._reconnect_task.cancel()  # Cancel any existing reconnect task
                 self._reconnect_task = None
+
+            # Initialize zone states after successful connection
+            self.initial_query_complete.clear()  # Reset the event
+            for zone_id in ZONES.values(): #Iterate through all defined zone IDs
+                if zone_id <= 0x0F: #Query only main zones, pre-outs are included in response
+                    await self.async_query_zone_state(zone_id)
+            self.initial_query_complete.set()  # Signal completion
+
             return True  # Indicate successful connection
         except Exception as err:
             self._connected = False
@@ -97,6 +107,7 @@ class AxiumController:
                 encoded = ''.join(f"{b:02X}" for b in command_bytes) + '\n'
                 self._serial_writer.write(encoded.encode('ascii'))
                 await self._serial_writer.drain()  # Ensure data is sent
+                _LOGGER.debug(f"Sent command: {encoded.strip()}") #Debug log sent command
                 return True  # Indicate success
         except Exception as err:
             _LOGGER.error(
@@ -175,3 +186,135 @@ class AxiumController:
             self._state_cache.setdefault(zone, {})["treble"] = treble_level
             return True
         return False
+
+    async def async_query_zone_state(self, zone_id: int) -> None:
+        """Query all parameters for a zone and update state cache."""
+        command = bytes([0x09, zone_id]) # Send All Parameters command
+        _LOGGER.debug(f"Querying state for zone {zone_id}...")
+        if not await self._send_command(command): #Send command and check success
+            _LOGGER.warning(f"Failed to send state query command for zone {zone_id}.")
+            return
+
+        expected_responses = [ #List of expected command codes in response
+            '01', '02', '03', '04', '05', '06', '07', '0C', '0D', '1C', '1D', '26', '29',
+            '09', '1E', '0F' # Add expected but currently unused responses
+        ]
+        responses_received = {} # Changed to just responses_received, will be nested dict
+        timeout_start = asyncio.get_event_loop().time()
+
+        while (asyncio.get_event_loop().time() - timeout_start) < self._response_timeout:
+            try:
+                response_bytes = await asyncio.wait_for(self._serial_reader.readline(), timeout=self._response_timeout) #Read line with timeout
+                if not response_bytes: #Empty response (timeout or connection issue)
+                    _LOGGER.debug(f"Empty response received for zone {zone_id} state query.")
+                    break
+
+                decoded_response = self._decode_response(response_bytes) # Decode response
+                if not decoded_response:
+                    _LOGGER.warning(f"Failed to decode response: {response_bytes.hex()}")
+                    continue #Skip to next response
+
+                if len(decoded_response) < 2: #Need at least command code and zone
+                    _LOGGER.warning(f"Incomplete response received: {decoded_response}")
+                    continue
+
+                command_code = decoded_response[0]
+                response_zone_hex = decoded_response[1]
+                response_zone_id = int(response_zone_hex, 16) #Parse zone ID here
+
+                if command_code in expected_responses: #Check if it's an expected response
+                    if response_zone_id not in responses_received: #Create zone entry if not exists
+                        responses_received[response_zone_id] = {}
+                    responses_received[response_zone_id][command_code] = decoded_response #Store response by zone and command
+
+                else:
+                    _LOGGER.debug(f"Unexpected command code in response: {command_code}, full response: {decoded_response}")
+
+
+            except asyncio.TimeoutError: #Catch timeout
+                _LOGGER.debug(f"Timeout waiting for zone {zone_id} state response.")
+                break
+            except Exception as e: #Catch other errors during read
+                _LOGGER.error(f"Error reading response during zone {zone_id} state query: {e}", exc_info=True)
+                break #Exit loop on error
+
+        if not responses_received:
+            _LOGGER.warning(f"No valid state responses received for zone {zone_id}.")
+            return
+
+        _LOGGER.debug(f"Received responses for zone {zone_id}: {responses_received.keys()}")
+        self._update_state_from_responses(zone_id, responses_received) # Process and update state from collected responses
+        _LOGGER.info(f"Initial state query completed for zone {zone_id}.")
+
+
+    def _decode_response(self, response_bytes):
+        """Decodes a byte response to a readable string, showing the hex bytes."""
+        if not response_bytes:
+            return None
+        try:
+            # Decode the ASCII hex encoded values
+            response_str = response_bytes.strip().decode('ascii', errors='ignore')
+            decoded_bytes = [response_str[i:i+2] for i in range(0, len(response_str), 2)] #Keep as hex strings for parsing
+            return decoded_bytes
+        except ValueError:
+            _LOGGER.warning(f"Invalid response encoding: {response_bytes}")
+            return None # Indicate decoding failure
+
+    def _update_state_from_responses(self, main_zone_id, responses): #responses is now nested dict
+        """Update the zone state cache based on parsed responses."""
+        # Now iterates through zones in responses, not just assuming main zone
+        for response_zone_id, zone_responses in responses.items():
+            zone_state = self._state_cache.setdefault(response_zone_id, {}) #Get or create zone state
+
+            for command_code, response_hex_list in zone_responses.items():
+                try:
+                    if command_code == '01': #Power state
+                        power_state_hex = response_hex_list[2]
+                        power_state = power_state_hex == '01' # '01' is power on, '00' is standby
+                        zone_state['power'] = power_state
+                        _LOGGER.debug(f"Parsed command code 01 for zone {response_zone_id} - Response: {response_hex_list}")
+
+                    elif command_code == '02': #Mute state
+                        mute_state_hex = response_hex_list[2]
+                        mute_state = mute_state_hex == '00' # '00' is unmuted, '01' is muted
+                        zone_state['mute'] = mute_state
+                        _LOGGER.debug(f"Parsed command code 02 for zone {response_zone_id} - Response: {response_hex_list}")
+
+                    elif command_code == '03': #Source select
+                        source_hex = response_hex_list[2]
+                        #Find source name from ID, default to "unknown" if not found
+                        source_name = next((name for name, src in SOURCES.items() if src["id"] == int(source_hex, 16)), "unknown")
+                        source_id = int(source_hex, 16)
+                        zone_state['source'] = source_id #Store ID not name in cache
+                        _LOGGER.debug(f"Parsed command code 03 for zone {response_zone_id} - Response: {response_hex_list}")
+
+                    elif command_code == '04': #Volume level
+                        volume_hex = response_hex_list[2]
+                        volume_level_axium = int(volume_hex, 16)
+                        volume_percent = int(round((volume_level_axium / 160) * 100)) #Convert to percentage
+                        zone_state['volume'] = volume_percent
+                        _LOGGER.debug(f"Parsed command code 04 for zone {response_zone_id} - Response: {response_hex_list}")
+
+                    elif command_code == '05': #Bass level
+                        bass_hex = response_hex_list[2]
+                        bass_level = int.from_bytes(bytes.fromhex(bass_hex), byteorder='big', signed=True) #Handle signed byte
+                        zone_state['bass'] = bass_level
+                        _LOGGER.debug(f"Parsed command code 05 for zone {response_zone_id} - Response: {response_hex_list}")
+
+                    elif command_code == '06': #Treble level
+                        treble_hex = response_hex_list[2]
+                        treble_level = int.from_bytes(bytes.fromhex(treble_hex), byteorder='big', signed=True) #Handle signed byte
+                        zone_state['treble'] = treble_level
+                        _LOGGER.debug(f"Parsed command code 06 for zone {response_zone_id} - Response: {response_hex_list}")
+
+                    # Handle expected but currently unused responses
+                    elif command_code in ['07', '0C', '0D', '1C', '26', '29', '09', '1E', '0F']:
+                        _LOGGER.debug(f"Parsed and ignored command code {command_code} for zone {response_zone_id} - Response: {response_hex_list}")
+
+                except Exception as e:
+                    _LOGGER.warning(f"Error parsing response for command code {command_code}: {response_hex_list}. Error: {e}")
+                    continue #Continue to next command code even if one fails
+
+            _LOGGER.debug(f"Updated state cache for zone {response_zone_id}: {zone_state}") #Log for each zone updated
+
+        _LOGGER.debug(f"State cache update complete after parsing responses for main zone {main_zone_id}.") #General log at the end
