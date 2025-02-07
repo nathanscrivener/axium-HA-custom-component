@@ -1,10 +1,13 @@
 """Axium amplifier controller."""
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING  # Import TYPE_CHECKING
 
 import serial_asyncio
 from .const import REQUIRED_BAUDRATE, ZONES, SOURCES
+
+if TYPE_CHECKING:
+    from .media_player import AxiumZone  # Import only during type checking
 
 _LOGGER = logging.getLogger("custom_components.axium")
 
