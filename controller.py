@@ -24,6 +24,7 @@ class AxiumController:
         self._last_attempt = 0  # Time of the last connection attempt
         self._response_timeout = 2 # seconds for response timeout
         self.initial_query_complete = asyncio.Event()  # Event to signal completion
+        self._entity_map = {}  # {zone_id: entity_instance}
 
         # Mapping of main zones to pre-out zones (and vice-versa)
         self._zone_mapping = {}
@@ -151,7 +152,7 @@ class AxiumController:
         return False
 
     async def set_source(self, zone: int, source: int) -> bool:
-        """Set input source for a zone, and update cache for paired zone."""
+        """Set input source, update cache, and trigger immediate entity updates."""
         command = bytes([0x03, zone, source])
         if await self._send_command(command):
             self._state_cache.setdefault(zone, {})["source"] = source
@@ -160,6 +161,14 @@ class AxiumController:
             paired_zone = self._zone_mapping.get(zone)
             if paired_zone:
                 self._state_cache.setdefault(paired_zone, {})["source"] = source
+
+                # --- IMMEDIATE UPDATE SECTION ---
+                if zone in self._entity_map:
+                    await self._entity_map[zone].async_update_ha_state(True)
+                if paired_zone in self._entity_map:
+                    await self._entity_map[paired_zone].async_update_ha_state(True)
+                # --- END IMMEDIATE UPDATE SECTION ---
+
             return True
         return False
 
@@ -318,3 +327,14 @@ class AxiumController:
             _LOGGER.debug(f"Updated state cache for zone {response_zone_id}: {zone_state}") #Log for each zone updated
 
         _LOGGER.debug(f"State cache update complete after parsing responses for main zone {main_zone_id}.") #General log at the end
+
+    def register_entity(self, zone_id: int, entity: "AxiumZone") -> None:
+        """Register an entity with the controller."""
+        self._entity_map[zone_id] = entity
+        _LOGGER.debug(f"Registered entity for zone ID {zone_id}: {entity}")
+
+    def unregister_entity(self, zone_id: int) -> None:
+        """Unregister an entity."""
+        if zone_id in self._entity_map:
+            del self._entity_map[zone_id]
+            _LOGGER.debug(f"Unregistered entity for zone ID {zone_id}")

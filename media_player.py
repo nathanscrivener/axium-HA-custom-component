@@ -76,7 +76,7 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
         self._attr_unique_id = f"axium_{name}"
         self._zone_id = zone_id
         self.entity_id = f"media_player.axium_{name}"
-
+        self._controller.register_entity(self._zone_id, self) # Register!
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
@@ -111,7 +111,6 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
         # Wait for the initial query to complete before updating.
         await self._controller.initial_query_complete.wait() #Crucial addition
         await self.async_update() # Get the latest state
-
 
     async def async_update(self) -> None:
         """Retrieve latest state."""
@@ -172,3 +171,7 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
                 if await self._controller.set_source(self._zone_id, source_info["id"]):
                     self._attr_source = source
                 break
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Run when entity will be removed from hass."""
+        self._controller.unregister_entity(self._zone_id) #Unregister
