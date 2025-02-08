@@ -13,6 +13,7 @@ from homeassistant.helpers.discovery import async_load_platform
 # No need for async_remove_entity
 
 from .controller import AxiumController
+from . import services # Import services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,30 +70,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             "entry": None,  # Placeholder for the config entry
         }
 
-        # Define bass and treble service functions
-        async def handle_set_bass(call):
-            """Handle the set_bass service call."""
-            zone_name = call.data.get("zone")
-            level = call.data.get("level")
-            zone_id = ZONES[zone_name]
-            await controller.set_bass(zone_id, level)
-
-        async def handle_set_treble(call):
-            """Handle the set_treble service call."""
-            zone_name = call.data.get("zone")
-            level = call.data.get("level")
-            zone_id = ZONES[zone_name]
-            await controller.set_treble(zone_id, level)
-
-        # Define the service schema for HA to validate the bass and treble service calls
-        service_schema = vol.Schema({
-            vol.Required("zone"): vol.In(list(ZONES.keys())),  # Convert to list
-            vol.Required("level"): vol.All(int, vol.Range(min=-12, max=12))
-        })
-
-        _LOGGER.debug("Registering bass and treble services.")
-        hass.services.async_register(DOMAIN, "set_bass", handle_set_bass, schema=service_schema)
-        hass.services.async_register(DOMAIN, "set_treble", handle_set_treble, schema=service_schema)
+        # Register services from services.py
+        await services.async_setup_services(hass, controller)
 
         # Load the media_player platform
         _LOGGER.debug("Loading Axium media_player platform.")

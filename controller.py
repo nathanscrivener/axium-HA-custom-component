@@ -199,6 +199,20 @@ class AxiumController:
             return True
         return False
 
+    async def set_max_volume(self, zone: int, max_volume: int) -> bool:
+        """Set maximum volume level for a zone (0-160)."""
+        axium_max_volume = min(max(int(max_volume), 0), 160)  # Ensure 0 <= max_volume <= 160
+        command = bytes([0x0D, zone, axium_max_volume]) #Command 0D for Max Volume
+        if await self._send_command(command):
+            self._state_cache.setdefault(zone, {})["max_volume"] = axium_max_volume # Update cache
+            # --- IMMEDIATE UPDATE SECTION ---
+            if zone in self._entity_map:
+                await self._entity_map[zone].async_update_ha_state(True) # Force entity update
+            # --- END IMMEDIATE UPDATE SECTION ---
+            return True
+        return False
+
+
     async def async_query_zone_state(self, zone_id: int) -> None:
         """Query all parameters for a zone and update state cache."""
         command = bytes([0x09, zone_id]) # Send All Parameters command
