@@ -22,6 +22,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN, ZONES, SOURCES
 from .controller import AxiumController
+from .volume_scaling import linear_to_perceptual_volume, perceptual_to_linear_volume # Import scaling functions
 
 async def async_setup_platform(
     hass: HomeAssistant,
@@ -138,7 +139,8 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
 
             # Re-scale volume from 0-160 (of max_volume) to 0-1.0 for HA
             if max_volume > 0:
-                self._attr_volume_level = current_volume / max_volume
+                linear_volume = current_volume / max_volume # Linear scaling from 0-160 to 0-1
+                self._attr_volume_level = perceptual_to_linear_volume(linear_volume) # Apply inverse perceptual scaling for display
             else:
                 self._attr_volume_level = 0 # Fallback if max_volume is invalid
 
@@ -175,7 +177,8 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
     async def async_set_volume_level(self, volume: float) -> None:
         """Set volume level, range 0..1."""
         max_volume = self._max_volume
-        scaled_volume = int(volume * max_volume)  # Correctly scaled volume
+        perceptual_volume = linear_to_perceptual_volume(volume) # Apply perceptual scaling
+        scaled_volume = int(perceptual_volume * max_volume)  # Scale to max volume
         if await self._controller.set_volume(self._zone_id, scaled_volume):
             self._attr_volume_level = volume  # Keep HA's 0.0-1.0 representation
 
