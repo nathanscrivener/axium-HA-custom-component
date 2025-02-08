@@ -51,6 +51,7 @@ async def async_setup_platform(
                 "volume": 50,
                 "mute": False,
                 "source": SOURCES["aux"]["id"],
+                "max_volume": 160 # Default max volume if not reported - changed to 160
             })
 
             entities.append(AxiumZone(controller, zone_name, zone_id))
@@ -77,6 +78,7 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
         self._zone_id = zone_id
         self.entity_id = f"media_player.axium_{name}"
         self._controller.register_entity(self._zone_id, self) # Register!
+        self._max_volume = 160 #Initialize default max volume - changed to 160
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
@@ -131,7 +133,15 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
         if state:
             # ALWAYS update ALL attributes from the cached state.
             self._attr_state = STATE_ON if state.get("power") else STATE_OFF
-            self._attr_volume_level = state.get("volume", 0) / 100.0
+            current_volume = state.get("volume", 0) #Get raw axium volume
+            max_volume = state.get("max_volume", 160) # Get max volume from state, default to 160
+
+            # Re-scale volume from 0-160 (of max_volume) to 0-1.0 for HA
+            if max_volume > 0:
+                self._attr_volume_level = current_volume / max_volume
+            else:
+                self._attr_volume_level = 0 # Fallback if max_volume is invalid
+
             self._attr_is_volume_muted = state.get("mute", False)
             source_id = state.get("source")
             if source_id is not None:
@@ -141,8 +151,11 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
                         break
             self._attr_extra_state_attributes = { #Ensure bass/treble initialised
                 "bass": state.get("bass", 0),
-                "treble": state.get("treble", 0)
+                "treble": state.get("treble", 0),
+                "max_volume": max_volume, #Include max_volume in attributes
+                "axium_volume": current_volume # OPTIONAL: For debugging
             }
+            self._max_volume = max_volume # Update internal max_volume
 
     async def async_turn_on(self) -> None:
         """Turn the zone on."""
@@ -161,8 +174,10 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
 
     async def async_set_volume_level(self, volume: float) -> None:
         """Set volume level, range 0..1."""
-        if await self._controller.set_volume(self._zone_id, int(volume * 100)):
-            self._attr_volume_level = volume
+        max_volume = self._max_volume
+        scaled_volume = int(volume * max_volume)  # Correctly scaled volume
+        if await self._controller.set_volume(self._zone_id, scaled_volume):
+            self._attr_volume_level = volume  # Keep HA's 0.0-1.0 representation
 
     async def async_select_source(self, source: str) -> None:
         """Select input source."""

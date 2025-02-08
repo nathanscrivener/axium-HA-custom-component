@@ -147,10 +147,10 @@ class AxiumController:
 
     async def set_volume(self, zone: int, volume: int) -> bool:
         """Set volume level for a zone."""
-        axium_volume = min(max(int((volume / 100) * 160), 0), 160)
+        axium_volume = min(max(int(volume), 0), 160)  # Ensure 0 <= volume <= 160
         command = bytes([0x04, zone, axium_volume])
-        if await self._send_command(command):  # Only update cache if command sent
-            self._state_cache.setdefault(zone, {})["volume"] = volume
+        if await self._send_command(command):
+            self._state_cache.setdefault(zone, {})["volume"] = volume  # Store raw value
             return True
         return False
 
@@ -209,7 +209,7 @@ class AxiumController:
 
         expected_responses = [ #List of expected command codes in response
             '01', '02', '03', '04', '05', '06', '07', '0C', '0D', '1C', '1D', '26', '29',
-            '09', '1E', '0F' # Add expected but currently unused responses
+            '09', '1E', '0F', '0D' # Add expected but currently unused responses, and '0D' for max volume
         ]
         responses_received = {} # Changed to just responses_received, will be nested dict
         timeout_start = asyncio.get_event_loop().time()
@@ -303,8 +303,8 @@ class AxiumController:
                     elif command_code == '04': #Volume level
                         volume_hex = response_hex_list[2]
                         volume_level_axium = int(volume_hex, 16)
-                        volume_percent = int(round((volume_level_axium / 160) * 100)) #Convert to percentage
-                        zone_state['volume'] = volume_percent
+                        #volume_percent = int(round((volume_level_axium / 160) * 100)) #Convert to percentage #Removed
+                        zone_state['volume'] = volume_level_axium #Store raw value
                         _LOGGER.debug(f"Parsed command code 04 for zone {response_zone_id} - Response: {response_hex_list}")
 
                     elif command_code == '05': #Bass level
@@ -319,9 +319,17 @@ class AxiumController:
                         zone_state['treble'] = treble_level
                         _LOGGER.debug(f"Parsed command code 06 for zone {response_zone_id} - Response: {response_hex_list}")
 
+                    elif command_code == '0D': #Maximum Volume Level
+                        max_volume_hex = response_hex_list[2]
+                        max_volume = int(max_volume_hex, 16)
+                        zone_state['max_volume'] = max_volume
+                        _LOGGER.debug(f"Parsed command code 0D for zone {response_zone_id} - Response: {response_hex_list}, Max Volume: {max_volume}")
+
                     # Handle expected but currently unused responses
-                    elif command_code in ['07', '0C', '0D', '1C', '26', '29', '09', '1E', '0F']:
+                    elif command_code in ['07', '0C', '1C', '1D', '26', '29', '09', '1E', '0F']: # Removed '0D' from ignored commands
                         _LOGGER.debug(f"Parsed and ignored command code {command_code} for zone {response_zone_id} - Response: {response_hex_list}")
+                    elif command_code in ['07', '0C', '0D', '1C', '1D', '26', '29', '09', '1E', '0F']:
+                        pass # no logging for these for now
 
                 except Exception as e:
                     _LOGGER.warning(f"Error parsing response for command code {command_code}: {response_hex_list}. Error: {e}")
