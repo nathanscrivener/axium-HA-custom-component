@@ -58,7 +58,7 @@ async def async_setup_entry(
 class AxiumBaseNumber(NumberEntity):
     """Base class for Axium bass and treble number entities."""
     
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_native_min_value = -12
     _attr_native_max_value = 12
     _attr_native_step = 1
@@ -123,6 +123,7 @@ class AxiumBassNumber(AxiumBaseNumber):
     """Represents the bass level for an Axium zone."""
     
     _attr_translation_key = "bass"
+    _attr_icon = "mdi:music-note"
     
     def __init__(
         self,
@@ -133,7 +134,7 @@ class AxiumBassNumber(AxiumBaseNumber):
         """Initialize the bass number entity."""
         super().__init__(controller, zone_id, zone_name)
         self._attr_unique_id = f"{zone_id}_bass"
-        self._attr_name = "Bass"
+        self._attr_name = f"{zone_name} Bass"
     
     async def async_update_native_value(self) -> None:
         """Update the native value from the controller state."""
@@ -164,6 +165,7 @@ class AxiumTrebleNumber(AxiumBaseNumber):
     """Represents the treble level for an Axium zone."""
     
     _attr_translation_key = "treble"
+    _attr_icon = "mdi:music-note"
     
     def __init__(
         self,
@@ -174,7 +176,7 @@ class AxiumTrebleNumber(AxiumBaseNumber):
         """Initialize the treble number entity."""
         super().__init__(controller, zone_id, zone_name)
         self._attr_unique_id = f"{zone_id}_treble"
-        self._attr_name = "Treble"
+        self._attr_name = f"{zone_name} Treble"
     
     async def async_update_native_value(self) -> None:
         """Update the native value from the controller state."""
