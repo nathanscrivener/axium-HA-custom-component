@@ -41,6 +41,7 @@ class AxiumController:
         self._response_timeout = 2 # seconds for response timeout
         self.initial_query_complete = asyncio.Event()  # Event to signal completion
         self._entity_map = {}  # {zone_id: entity_instance}
+        self._callbacks = {}  # {zone_id: [callback_functions]}
         self._refresh_task = None  # Task for periodic refresh
         self._monitor_task = None  # Task for continuous monitoring
         self._monitoring = False  # Flag to indicate if monitoring is active
@@ -235,10 +236,27 @@ class AxiumController:
             self._update_state_from_responses(zone_id, responses)
             
             # Update all affected zones in Home Assistant
-            for affected_zone_id in responses.keys():
+            affected_zones = list(responses.keys())
+            
+            # Log all affected zones
+            _LOGGER.debug(f"Zones affected by update: {affected_zones}")
+            
+            for affected_zone_id in affected_zones:
+                # Update the entity if registered
                 if affected_zone_id in self._entity_map:
                     _LOGGER.debug(f"Updating entity for zone {affected_zone_id} due to spontaneous update")
                     await self._entity_map[affected_zone_id].async_update_ha_state(True)
+                
+                # Notify callbacks - directly using the integer zone_id
+                if affected_zone_id in self._callbacks:
+                    _LOGGER.debug(f"Triggering {len(self._callbacks[affected_zone_id])} callbacks for zone {affected_zone_id}")
+                    for callback in self._callbacks[affected_zone_id]:
+                        try:
+                            await callback()
+                        except Exception as callback_error:
+                            _LOGGER.warning(f"Error in callback for zone {affected_zone_id}: {callback_error}")
+                else:
+                    _LOGGER.debug(f"No callbacks registered for zone {affected_zone_id}")
                 
         except Exception as e:
             _LOGGER.warning(f"Error processing spontaneous update: {e}, response: {decoded_response}")
@@ -352,9 +370,41 @@ class AxiumController:
             return True
         return False
 
-    async def get_zone_state(self, zone: int) -> dict:
-        """Get the cached state for a zone."""
+    async def async_get_zone_state(self, zone: int) -> dict:
+        """Get the cached state for a zone asynchronously."""
         return self._state_cache.get(zone, {})
+        
+    def get_zone_state(self, zone: str) -> dict:
+        """
+        Get the cached state for a zone synchronously.
+        This is used by entities that need to access state without awaiting.
+        """
+        # Convert string zone_id to int if needed
+        try:
+            if isinstance(zone, str):
+                # Check if the zone is in ZONES mapping
+                _LOGGER.info(f"Converting string zone ID '{zone}' to integer")
+                if zone in ZONES:
+                    zone_int = ZONES[zone]
+                    _LOGGER.info(f"Found zone '{zone}' in ZONES mapping: {zone_int}")
+                else:
+                    # Try to convert directly to int
+                    zone_int = int(zone)
+                    _LOGGER.info(f"Converting zone '{zone}' directly to int: {zone_int}")
+            else:
+                zone_int = zone
+                _LOGGER.info(f"Zone ID already an integer: {zone_int}")
+            
+            # Get the zone state from cache or return empty dict
+            zone_state = self._state_cache.get(zone_int, {})
+            
+            # Log for debugging
+            _LOGGER.info(f"Retrieved zone state for zone {zone} (ID: {zone_int}): {zone_state}")
+            
+            return zone_state
+        except (ValueError, TypeError) as e:
+            _LOGGER.warning(f"Invalid zone ID format: {zone}, Error: {e}")
+            return {}
 
     async def set_bass(self, zone: int, level: int) -> bool:
         """Set bass level for a zone (-12 to +12)."""
@@ -464,6 +514,9 @@ class AxiumController:
         _LOGGER.debug(f"Received responses for zone {zone_id}: {responses_received.keys()}")
         self._update_state_from_responses(zone_id, responses_received) # Process and update state from collected responses
         
+        # Log the full state cache for the refreshed zone
+        _LOGGER.info(f"After refresh, state cache for zone {zone_id}: {self._state_cache.get(zone_id, {})}")
+        
         # Update entity if needed
         for zone_to_update in responses_received.keys():
             if zone_to_update in self._entity_map:
@@ -545,13 +598,13 @@ class AxiumController:
                         bass_hex = response_hex_list[2]
                         bass_level = int.from_bytes(bytes.fromhex(bass_hex), byteorder='big', signed=True) #Handle signed byte
                         zone_state['bass'] = bass_level
-                        _LOGGER.debug(f"Parsed command code 05 for zone {response_zone_id} - Response: {response_hex_list}")
+                        _LOGGER.info(f"Parsed bass level for zone {response_zone_id}: {bass_level} (from hex: {bass_hex})")
 
                     elif command_code == '06': #Treble level
                         treble_hex = response_hex_list[2]
                         treble_level = int.from_bytes(bytes.fromhex(treble_hex), byteorder='big', signed=True) #Handle signed byte
                         zone_state['treble'] = treble_level
-                        _LOGGER.debug(f"Parsed command code 06 for zone {response_zone_id} - Response: {response_hex_list}")
+                        _LOGGER.info(f"Parsed treble level for zone {response_zone_id}: {treble_level} (from hex: {treble_hex})")
 
                     elif command_code == '0D': #Maximum Volume Level
                         max_volume_hex = response_hex_list[2]
@@ -583,3 +636,46 @@ class AxiumController:
         if zone_id in self._entity_map:
             del self._entity_map[zone_id]
             _LOGGER.debug(f"Unregistered entity for zone ID {zone_id}")
+            
+    def register_callback(self, callback, zone_id: str) -> None:
+        """Register a callback for a specific zone."""
+        # Convert zone_id from string to int if needed
+        try:
+            if isinstance(zone_id, str):
+                if zone_id in ZONES:
+                    zone_int = ZONES[zone_id]
+                else:
+                    zone_int = int(zone_id)
+            else:
+                zone_int = zone_id
+                
+            # Use the integer zone ID for the callback registry
+            if zone_int not in self._callbacks:
+                self._callbacks[zone_int] = []
+            if callback not in self._callbacks[zone_int]:
+                self._callbacks[zone_int].append(callback)
+                _LOGGER.debug(f"Registered callback for zone ID {zone_id} (int: {zone_int})")
+        except (ValueError, TypeError) as e:
+            _LOGGER.error(f"Failed to register callback for zone {zone_id}: {e}")
+            
+    def unregister_callback(self, callback, zone_id: str) -> None:
+        """Unregister a callback."""
+        # Convert zone_id from string to int if needed
+        try:
+            if isinstance(zone_id, str):
+                if zone_id in ZONES:
+                    zone_int = ZONES[zone_id]
+                else:
+                    zone_int = int(zone_id)
+            else:
+                zone_int = zone_id
+                
+            # Use the integer zone ID for the callback registry
+            if zone_int in self._callbacks and callback in self._callbacks[zone_int]:
+                self._callbacks[zone_int].remove(callback)
+                _LOGGER.debug(f"Unregistered callback for zone ID {zone_id} (int: {zone_int})")
+                # Clean up empty callback lists
+                if not self._callbacks[zone_int]:
+                    del self._callbacks[zone_int]
+        except (ValueError, TypeError) as e:
+            _LOGGER.error(f"Failed to unregister callback for zone {zone_id}: {e}")

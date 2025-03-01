@@ -19,7 +19,7 @@ _LOGGER = logging.getLogger(__name__)
 # Log a message when the module is imported
 _LOGGER.info("Axium integration module imported.")
 
-PLATFORMS = [Platform.MEDIA_PLAYER]
+PLATFORMS = [Platform.MEDIA_PLAYER, Platform.NUMBER]
 
 CONFIG_SCHEMA = vol.Schema(
     {

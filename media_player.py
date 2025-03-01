@@ -147,13 +147,13 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
             await self._controller.refresh_zone_state(self._zone_id)
             self._force_refresh = False
 
-        state = await self._controller.get_zone_state(self._zone_id)
+        state = await self._controller.async_get_zone_state(self._zone_id)
 
         # Check if this is a pre-out zone.  If so, get source from main zone.
         if self._zone_id in self._controller._zone_mapping.values():
             main_zone_id = self._controller._zone_mapping.get(self._zone_id)
             if main_zone_id:
-                main_zone_state = await self._controller.get_zone_state(main_zone_id)
+                main_zone_state = await self._controller.async_get_zone_state(main_zone_id)
                 if main_zone_state:
                     state["source"] = main_zone_state.get("source")
 
