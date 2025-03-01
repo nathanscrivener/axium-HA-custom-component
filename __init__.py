@@ -3,17 +3,16 @@ import logging
 import voluptuous as vol
 from typing import Any
 
-from .const import DOMAIN, CONF_SERIAL_PORT, CONF_ZONES, ZONES
+from .const import DOMAIN, CONF_SERIAL_PORT, CONF_ZONES, CONF_ZONE_NAMES, ZONES
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.helpers.discovery import async_load_platform
-# No need for async_remove_entity
+from homeassistant.config_entries import ConfigEntry
 
 from .controller import AxiumController
-from . import services # Import services
+# Don't import services at the module level to avoid circular imports
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,6 +20,17 @@ _LOGGER = logging.getLogger(__name__)
 _LOGGER.info("Axium integration module imported.")
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
+
+# Define Schemas for services
+SERVICE_SCHEMA_BASS_TREBLE = vol.Schema({
+    vol.Required("zone"): vol.In(list(ZONES.keys())),
+    vol.Required("level"): vol.All(int, vol.Range(min=-12, max=12))
+})
+
+SERVICE_SCHEMA_MAX_VOLUME = vol.Schema({
+    vol.Required("zone"): vol.In(list(ZONES.keys())),
+    vol.Required("level"): vol.All(int, vol.Range(min=0, max=160))
+})
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -36,56 +46,75 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-# HA looks for the following function and calls it to set up the integration
+# YAML config setup
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Axium integration."""
-
-    _LOGGER.info("Axium integration setup started.")
+    """Set up the Axium integration from YAML."""
+    if DOMAIN not in config:
+        return True
 
     conf = config[DOMAIN]
-    serial_port = conf.get(CONF_SERIAL_PORT)
-    zones = conf.get(CONF_ZONES)
+    
+    # Initialize domain data
+    hass.data.setdefault(DOMAIN, {})
+    
+    # Forward the config to be handled by async_setup_entry
+    hass.async_create_task(
+        hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "import"},
+            data={
+                CONF_SERIAL_PORT: conf[CONF_SERIAL_PORT],
+                CONF_ZONES: conf[CONF_ZONES],
+                CONF_ZONE_NAMES: {zone: zone.replace("_", " ").title() for zone in conf[CONF_ZONES]},
+            },
+        )
+    )
+    
+    return True
+
+# Config entry setup
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up the Axium integration from a config entry."""
+    _LOGGER.info("Axium integration setup started from config entry.")
+
+    serial_port = entry.data.get(CONF_SERIAL_PORT)
+    zones = entry.data.get(CONF_ZONES)
+    zone_names = entry.data.get(CONF_ZONE_NAMES, {})
 
     if not serial_port or not zones:
         _LOGGER.error("Missing required configuration: serial_port or zones.")
         return False
 
     try:
+        # Initialize domain data
+        hass.data.setdefault(DOMAIN, {})
+        
         # Initialize the controller
         _LOGGER.debug("Initializing Axium controller.")
         controller = AxiumController(serial_port)
-        # Attempt to connect.  The connect() method now returns True/False and initializes state.
+        # Attempt to connect
         if not await controller.connect():
             _LOGGER.error("Failed to connect to Axium controller during setup.")
             return False  # Exit early if the initial connection fails.
 
         # Store controller and config in hass.data
         _LOGGER.debug("Storing controller and config in hass.data.")
-        hass.data[DOMAIN] = {
+        hass.data[DOMAIN][entry.entry_id] = {
             "controller": controller,
             "config": {
                 "serial_port": serial_port,
-                "zones": zones
+                "zones": zones,
+                "zone_names": zone_names
             },
-            "entry": None,  # Placeholder for the config entry
+            "entry": entry,
         }
 
         # Register services from services.py
-        await services.async_setup_services(hass, controller)
+        from .services import async_setup_services
+        await async_setup_services(hass, controller)
 
-        # Load the media_player platform
-        _LOGGER.debug("Loading Axium media_player platform.")
-        # Store the config entry
-        hass.data[DOMAIN]['entry'] = config.get('config_entry') #Get config entry from passed in config
-        #The line above replaces the need for passing in the entry, and storing it in async_setup_entry
-        task = hass.async_create_task(
-            async_load_platform(
-                hass, Platform.MEDIA_PLAYER, DOMAIN, {}, config
-            )
-        )
-
-        if hass.data[DOMAIN]['entry']: #Check if the entry exists
-            hass.data[DOMAIN]['entry'].async_on_unload(task)  #Simplified unload
+        # Set up platforms
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
         _LOGGER.info("Axium integration setup completed successfully.")
         return True  # Indicate successful setup
@@ -94,19 +123,35 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         _LOGGER.error(f"Failed to set up Axium integration: {e}", exc_info=True)
         return False  # Indicate setup failure
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigType) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle unloading of the Axium integration."""
     _LOGGER.info("Unloading Axium integration")
-
-    # Close the serial connection
-    controller = hass.data[DOMAIN]["controller"]
-    await controller.disconnect()
 
     # Unload the platform (media_player)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Remove data
-    if unload_ok:
-        hass.data.pop(DOMAIN)
+    if unload_ok and DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+        # Get controller before removing the data
+        controller = hass.data[DOMAIN][entry.entry_id]["controller"]
+        
+        # Close the serial connection
+        await controller.disconnect()
+        
+        # Remove this controller from the list of controllers if it exists
+        if "controllers" in hass.data[DOMAIN] and controller in hass.data[DOMAIN]["controllers"]:
+            hass.data[DOMAIN]["controllers"].remove(controller)
+        
+        # Remove data for this entry
+        hass.data[DOMAIN].pop(entry.entry_id)
+        
+        # If no more config entries for this domain, clean up completely
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if len(entries) == 0:
+            # Unregister services
+            from .services import async_unregister_services
+            await async_unregister_services(hass)
+            # Remove domain data if it exists
+            if DOMAIN in hass.data:
+                hass.data.pop(DOMAIN)
 
     return unload_ok

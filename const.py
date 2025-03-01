@@ -4,6 +4,7 @@ from typing import Final
 DOMAIN: Final = "axium"
 CONF_SERIAL_PORT: Final = "serial_port"
 CONF_ZONES: Final = "zones"
+CONF_ZONE_NAMES: Final = "zone_names"
 REQUIRED_BAUDRATE: Final = 9600
 
 

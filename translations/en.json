@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Axium Amplifier",
+        "description": "Select the serial port connected to your Axium amplifier.",
+        "data": {
+          "serial_port": "Serial port"
+        }
+      },
+      "zones": {
+        "title": "Select Zones",
+        "description": "Select which zones you want to control.",
+        "data": {
+          "zones": "Zones"
+        }
+      },
+      "zone_names": {
+        "title": "Customize Zone Names",
+        "description": "Customize the names of the zones in Home Assistant."
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the amplifier. Please check that it is powered on and that the serial port is correct."
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update Zones",
+        "description": "Update which zones you want to control.",
+        "data": {
+          "zones": "Zones"
+        }
+      },
+      "zone_names": {
+        "title": "Customize Zone Names",
+        "description": "Customize the names of the zones in Home Assistant."
+      }
+    }
+  }
+} 

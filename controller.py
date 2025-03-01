@@ -83,12 +83,7 @@ class AxiumController:
             except Exception as e:
                 _LOGGER.error(f"Error closing serial writer: {e}")
             self._serial_writer = None
-        if self._serial_reader:
-            try:
-                self._serial_reader.close()
-            except Exception as e:
-                _LOGGER.error(f"Error closing serial reader: {e}")
-
+            # The reader will be cleaned up automatically when the writer is closed
             self._serial_reader = None
         self._connected = False
 

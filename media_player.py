@@ -19,32 +19,36 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.config_entries import ConfigEntry
 
-from .const import DOMAIN, ZONES, SOURCES
+from .const import DOMAIN, ZONES, SOURCES, CONF_ZONE_NAMES
 from .controller import AxiumController
 from .volume_scaling import linear_to_perceptual_volume, perceptual_to_linear_volume # Import scaling functions
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the Axium media player platform."""
-    _LOGGER.info("Setting up Axium media player platform.")
+    """Set up the Axium media player platform from a config entry."""
+    _LOGGER.info("Setting up Axium media player platform from config entry.")
 
-    if DOMAIN not in hass.data:
-        _LOGGER.error("DOMAIN not in hass.data, exiting async_setup_platform")
+    if DOMAIN not in hass.data or entry.entry_id not in hass.data[DOMAIN]:
+        _LOGGER.error("DOMAIN or entry_id not in hass.data, exiting async_setup_entry")
         return
 
-    controller = hass.data[DOMAIN]["controller"]
-    zones = hass.data[DOMAIN]["config"]["zones"]
+    data = hass.data[DOMAIN][entry.entry_id]
+    controller = data["controller"]
+    config = data["config"]
+    
+    zones = config["zones"]
+    zone_names = config.get("zone_names", {})
 
     entities = []
     for zone_name in zones:
         if zone_name in ZONES:
-
             zone_id = ZONES[zone_name]
+            display_name = zone_names.get(zone_name, zone_name.replace("_", " ").title())
 
             # Initialize the controller's cache for this zone (this is still needed)
             controller._state_cache.setdefault(zone_id, {
@@ -55,7 +59,7 @@ async def async_setup_platform(
                 "max_volume": 160 # Default max volume if not reported - changed to 160
             })
 
-            entities.append(AxiumZone(controller, zone_name, zone_id))
+            entities.append(AxiumZone(controller, zone_name, zone_id, display_name))
         else:
             _LOGGER.warning(f"Zone {zone_name} not found in ZONES mapping.")
 
@@ -66,18 +70,30 @@ async def async_setup_platform(
     _LOGGER.info(f"Adding {len(entities)} Axium media player entities.")
     async_add_entities(entities)
 
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
+    """Set up the Axium media player platform from YAML."""
+    _LOGGER.info("Setting up Axium media player platform from YAML (deprecated).")
+    # This function is maintained for backwards compatibility
+    # No actual implementation as setup is handled via config entries now
+
 class AxiumZone(MediaPlayerEntity, RestoreEntity):
     """Representation of an Axium amplifier zone."""
 
     _attr_has_entity_name = True
 
-    def __init__(self, controller: AxiumController, name: str, zone_id: int) -> None:
+    def __init__(self, controller: AxiumController, zone_id_name: str, zone_id: int, display_name: str) -> None:
         """Initialize the zone."""
         self._controller = controller
-        self._attr_name = f"Axium {name.replace('_', ' ').title()}"
-        self._attr_unique_id = f"axium_{name}"
+        self._zone_id_name = zone_id_name
+        self._attr_name = f"Axium {display_name}"
+        self._attr_unique_id = f"axium_{zone_id_name}"
         self._zone_id = zone_id
-        self.entity_id = f"media_player.axium_{name}"
+        self.entity_id = f"media_player.axium_{zone_id_name}"
         self._controller.register_entity(self._zone_id, self) # Register!
         self._max_volume = 160 #Initialize default max volume - changed to 160
 
