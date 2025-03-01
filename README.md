@@ -106,7 +106,7 @@ The integration continuously monitors the serial port for "echoes" - unsolicited
 ### Connection Issues
 - Verify the serial port path is correct
 - Ensure you have read/write permissions to the serial port
-- Check the baud rate (should be 57600 for Axium amplifiers)
+- Check the baud rate (should be 9600 for older Axium amplifiers using RS232)
 - If using an IP-to-serial adapter, verify network connectivity
 
 ### State Updates Not Working
