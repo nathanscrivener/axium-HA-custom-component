@@ -1,4 +1,17 @@
-"""Axium amplifier controller."""
+"""
+Axium amplifier controller.
+
+This module provides the AxiumController class, which handles communication with the Axium amplifier
+via a serial connection. The controller supports:
+
+1. Querying and setting the state of amplifier zones (power, volume, source, etc.)
+2. Refreshing zone states on a periodic basis (every 15 minutes)
+3. Continuous monitoring of the serial port for "echoes" - unsolicited state updates from the amplifier
+   that occur when changes are made via keypads or directly on the amplifier
+
+The continuous monitoring feature allows for real-time updates in Home Assistant when changes
+are made outside of Home Assistant (e.g., via physical keypads or remotes).
+"""
 import asyncio
 import logging
 from typing import Optional, TYPE_CHECKING, List, Dict, Any, Union
@@ -29,6 +42,10 @@ class AxiumController:
         self.initial_query_complete = asyncio.Event()  # Event to signal completion
         self._entity_map = {}  # {zone_id: entity_instance}
         self._refresh_task = None  # Task for periodic refresh
+        self._monitor_task = None  # Task for continuous monitoring
+        self._monitoring = False  # Flag to indicate if monitoring is active
+        self._last_command_time = None  # Time of last sent command
+        self._read_lock = asyncio.Lock()  # Separate lock for reading, allows parallel read/write operations
 
         # Mapping of main zones to pre-out zones (and vice-versa)
         self._zone_mapping = {}
@@ -67,6 +84,9 @@ class AxiumController:
             
             # Start periodic refresh task
             self._start_refresh_task()
+            
+            # Start continuous monitoring task
+            self._start_monitor_task()
 
             return True  # Indicate successful connection
         except Exception as err:
@@ -80,6 +100,9 @@ class AxiumController:
         """Explicitly disconnect from the amplifier."""
         # Cancel the refresh task if it's running
         self._stop_refresh_task()
+        
+        # Stop the monitoring task if it's running
+        self._stop_monitor_task()
         
         if self._serial_writer:
             try:
@@ -104,6 +127,107 @@ class AxiumController:
             self._refresh_task.cancel()
             self._refresh_task = None
             _LOGGER.debug("Stopped periodic refresh task")
+    
+    def _start_monitor_task(self) -> None:
+        """Start the continuous monitoring task if not already running."""
+        if self._monitor_task is None or self._monitor_task.done():
+            self._monitoring = True
+            self._monitor_task = asyncio.create_task(self._monitor_loop())
+            _LOGGER.info("Started continuous amplifier state monitoring")
+            
+    def _stop_monitor_task(self) -> None:
+        """Stop the continuous monitoring task if running."""
+        self._monitoring = False
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            self._monitor_task = None
+            _LOGGER.debug("Stopped continuous monitoring task")
+            
+    async def _monitor_loop(self) -> None:
+        """
+        Continuously monitor the serial port for spontaneous updates from the amplifier.
+        
+        This loop runs indefinitely in the background, processing any incoming data
+        that is not a direct response to a command we sent. This allows us to detect
+        changes made by keypads, remote controls, or directly on the amplifier.
+        """
+        try:
+            while self._monitoring and self._connected:
+                # Check if we're in the middle of sending a command
+                # If we are, we'll skip monitoring for a short time to avoid
+                # mixing up responses to our commands with spontaneous updates
+                current_time = asyncio.get_event_loop().time()
+                recently_sent_command = (
+                    self._last_command_time is not None and 
+                    current_time - self._last_command_time < 0.5  # 500ms grace period
+                )
+                
+                if not recently_sent_command:
+                    # Only try to read if we're not expecting a response to a command
+                    try:
+                        # Use a very short timeout to make this non-blocking
+                        async with self._read_lock:
+                            response_bytes = await asyncio.wait_for(
+                                self._serial_reader.readline(), 
+                                timeout=0.1  # 100ms timeout, we'll loop quickly
+                            )
+                            
+                            if response_bytes:
+                                # Process the response
+                                decoded_response = self._decode_response(response_bytes)
+                                if decoded_response and len(decoded_response) >= 2:
+                                    # This is a spontaneous update from the amplifier
+                                    await self._process_spontaneous_update(decoded_response)
+                    except asyncio.TimeoutError:
+                        # This is expected, just continue the loop
+                        pass
+                    except Exception as e:
+                        _LOGGER.warning(f"Error in monitor loop: {e}")
+                
+                # Small sleep to prevent CPU hogging
+                await asyncio.sleep(0.05)  # 50ms sleep
+                
+        except asyncio.CancelledError:
+            # Task was cancelled - this is normal during shutdown
+            _LOGGER.debug("Monitoring task cancelled")
+        except Exception as e:
+            _LOGGER.error(f"Unexpected error in monitoring task: {e}", exc_info=True)
+            # Attempt to restart the monitor task if it fails
+            self._monitor_task = asyncio.create_task(self._monitor_loop())
+            
+    async def _process_spontaneous_update(self, decoded_response: List[str]) -> None:
+        """
+        Process a spontaneous update from the amplifier (not in response to our command).
+        
+        Args:
+            decoded_response: The decoded response from the amplifier as a list of hex strings
+        """
+        if len(decoded_response) < 2:
+            return
+            
+        try:
+            command_code = decoded_response[0]
+            zone_hex = decoded_response[1]
+            zone_id = int(zone_hex, 16)
+            
+            # Create a dictionary structure like what refresh_zone_state uses
+            responses = {zone_id: {command_code: decoded_response}}
+            
+            # Update state cache with this response
+            self._update_state_from_responses(zone_id, responses)
+            
+            # Update the entity in Home Assistant
+            if zone_id in self._entity_map:
+                _LOGGER.debug(f"Spontaneous update received for zone {zone_id}: {decoded_response}")
+                await self._entity_map[zone_id].async_update_ha_state(True)
+                
+            # If this affects a paired zone, update that too
+            paired_zone = self._zone_mapping.get(zone_id)
+            if paired_zone and paired_zone in self._entity_map:
+                await self._entity_map[paired_zone].async_update_ha_state(True)
+                
+        except Exception as e:
+            _LOGGER.warning(f"Error processing spontaneous update: {e}, response: {decoded_response}")
             
     async def _reconnect(self) -> None:
         """Periodically attempt to reconnect."""
@@ -147,6 +271,10 @@ class AxiumController:
                 self._serial_writer.write(encoded.encode('ascii'))
                 await self._serial_writer.drain()  # Ensure data is sent
                 _LOGGER.debug(f"Sent command: {encoded.strip()}") #Debug log sent command
+                
+                # Record the time we sent this command
+                self._last_command_time = asyncio.get_event_loop().time()
+                
                 return True  # Indicate success
         except Exception as err:
             _LOGGER.error(
@@ -277,41 +405,43 @@ class AxiumController:
         responses_received = {} # Changed to just responses_received, will be nested dict
         timeout_start = asyncio.get_event_loop().time()
 
-        while (asyncio.get_event_loop().time() - timeout_start) < self._response_timeout:
-            try:
-                response_bytes = await asyncio.wait_for(self._serial_reader.readline(), timeout=self._response_timeout) #Read line with timeout
-                if not response_bytes: #Empty response (timeout or connection issue)
-                    _LOGGER.debug(f"Empty response received for zone {zone_id} state query.")
+        # Use the read lock to ensure exclusive access to the serial reader
+        async with self._read_lock:
+            while (asyncio.get_event_loop().time() - timeout_start) < self._response_timeout:
+                try:
+                    response_bytes = await asyncio.wait_for(self._serial_reader.readline(), timeout=self._response_timeout) #Read line with timeout
+                    if not response_bytes: #Empty response (timeout or connection issue)
+                        _LOGGER.debug(f"Empty response received for zone {zone_id} state query.")
+                        break
+
+                    decoded_response = self._decode_response(response_bytes) # Decode response
+                    if not decoded_response:
+                        _LOGGER.warning(f"Failed to decode response: {response_bytes.hex()}")
+                        continue #Skip to next response
+
+                    if len(decoded_response) < 2: #Need at least command code and zone
+                        _LOGGER.warning(f"Incomplete response received: {decoded_response}")
+                        continue
+
+                    command_code = decoded_response[0]
+                    response_zone_hex = decoded_response[1]
+                    response_zone_id = int(response_zone_hex, 16) #Parse zone ID here
+
+                    if command_code in expected_responses: #Check if it's an expected response
+                        if response_zone_id not in responses_received: #Create zone entry if not exists
+                            responses_received[response_zone_id] = {}
+                        responses_received[response_zone_id][command_code] = decoded_response #Store response by zone and command
+
+                    else:
+                        _LOGGER.debug(f"Unexpected command code in response: {command_code}, full response: {decoded_response}")
+
+
+                except asyncio.TimeoutError: #Catch timeout
+                    _LOGGER.debug(f"Timeout waiting for zone {zone_id} state response.")
                     break
-
-                decoded_response = self._decode_response(response_bytes) # Decode response
-                if not decoded_response:
-                    _LOGGER.warning(f"Failed to decode response: {response_bytes.hex()}")
-                    continue #Skip to next response
-
-                if len(decoded_response) < 2: #Need at least command code and zone
-                    _LOGGER.warning(f"Incomplete response received: {decoded_response}")
-                    continue
-
-                command_code = decoded_response[0]
-                response_zone_hex = decoded_response[1]
-                response_zone_id = int(response_zone_hex, 16) #Parse zone ID here
-
-                if command_code in expected_responses: #Check if it's an expected response
-                    if response_zone_id not in responses_received: #Create zone entry if not exists
-                        responses_received[response_zone_id] = {}
-                    responses_received[response_zone_id][command_code] = decoded_response #Store response by zone and command
-
-                else:
-                    _LOGGER.debug(f"Unexpected command code in response: {command_code}, full response: {decoded_response}")
-
-
-            except asyncio.TimeoutError: #Catch timeout
-                _LOGGER.debug(f"Timeout waiting for zone {zone_id} state response.")
-                break
-            except Exception as e: #Catch other errors during read
-                _LOGGER.error(f"Error reading response during zone {zone_id} state query: {e}", exc_info=True)
-                break #Exit loop on error
+                except Exception as e: #Catch other errors during read
+                    _LOGGER.error(f"Error reading response during zone {zone_id} state query: {e}", exc_info=True)
+                    break #Exit loop on error
 
         if not responses_received:
             _LOGGER.warning(f"No valid state responses received for zone {zone_id}.")
