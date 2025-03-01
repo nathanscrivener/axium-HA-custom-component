@@ -96,24 +96,24 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
         self.entity_id = f"media_player.axium_{zone_id_name}"
         self._controller.register_entity(self._zone_id, self) # Register!
         self._max_volume = 160 #Initialize default max volume - changed to 160
+        self._force_refresh = False
+        self._attr_available = True
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
-        """Flag media player features that are supported."""
-        features = (
-            MediaPlayerEntityFeature.VOLUME_MUTE
-            | MediaPlayerEntityFeature.VOLUME_SET
-            | MediaPlayerEntityFeature.VOLUME_STEP
+        """Return flag of media commands that are supported."""
+        return (
+            MediaPlayerEntityFeature.VOLUME_SET
+            | MediaPlayerEntityFeature.VOLUME_MUTE
             | MediaPlayerEntityFeature.SELECT_SOURCE
             | MediaPlayerEntityFeature.TURN_ON
             | MediaPlayerEntityFeature.TURN_OFF
         )
-        return features
 
     @property
     def source_list(self) -> list[str]:
         """List of available input sources."""
-        return [source["name"] for source in SOURCES.values()]
+        return [source_info["name"] for source_info in SOURCES.values()]
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is about to be added to hass."""
@@ -125,6 +125,7 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
             if not self._controller.connected:
                 # If not connected, set state to unavailable.
                 self._attr_state = STATE_UNAVAILABLE
+                self._attr_available = False
         # No restoring of ANY attributes.
 
         # Wait for the initial query to complete before updating.
@@ -134,8 +135,17 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
     async def async_update(self) -> None:
         """Retrieve latest state."""
         if not self._controller.connected:
-            self._attr_state = STATE_UNAVAILABLE  # Set to unavailable if not connected
+            self._attr_state = STATE_UNAVAILABLE
+            self._attr_available = False
             return
+            
+        # Set availability to True since we're connected
+        self._attr_available = True
+            
+        # If force_refresh is True or we're in a PUSH refresh mode, actively query the amplifier
+        if self._force_refresh:
+            await self._controller.refresh_zone_state(self._zone_id)
+            self._force_refresh = False
 
         state = await self._controller.get_zone_state(self._zone_id)
 
@@ -174,6 +184,10 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
                 "axium_volume": current_volume # OPTIONAL: For debugging
             }
             self._max_volume = max_volume # Update internal max_volume
+            
+    def request_refresh(self) -> None:
+        """Request a refresh on next update."""
+        self._force_refresh = True
 
     async def async_turn_on(self) -> None:
         """Turn the zone on."""

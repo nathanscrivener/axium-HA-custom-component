@@ -1,7 +1,7 @@
 """Axium amplifier controller."""
 import asyncio
 import logging
-from typing import Optional, TYPE_CHECKING  # Import TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, List, Dict, Any, Union
 
 import serial_asyncio
 from .const import REQUIRED_BAUDRATE, ZONES, SOURCES
@@ -61,9 +61,7 @@ class AxiumController:
 
             # Initialize zone states after successful connection
             self.initial_query_complete.clear()  # Reset the event
-            for zone_id in ZONES.values(): #Iterate through all defined zone IDs
-                if zone_id <= 0x0F: #Query only main zones, pre-outs are included in response
-                    await self.async_query_zone_state(zone_id)
+            await self.refresh_all_zones()  # Use the new general refresh function
             self.initial_query_complete.set()  # Signal completion
 
             return True  # Indicate successful connection
@@ -207,14 +205,28 @@ class AxiumController:
             return True
         return False
 
-
-    async def async_query_zone_state(self, zone_id: int) -> None:
-        """Query all parameters for a zone and update state cache."""
+    async def refresh_zone_state(self, zone_id: int) -> bool:
+        """
+        Query the state of a specific zone and update the state cache.
+        
+        This is a general-purpose function that can be called at any time to 
+        refresh the state of a zone, not just during initialization.
+        
+        Args:
+            zone_id: The ID of the zone to refresh
+            
+        Returns:
+            bool: True if the query was successful, False otherwise
+        """
+        if not self._connected and not await self.connect():
+            _LOGGER.error(f"Cannot refresh zone {zone_id} - not connected and connection failed")
+            return False
+            
         command = bytes([0x09, zone_id]) # Send All Parameters command
-        _LOGGER.debug(f"Querying state for zone {zone_id}...")
+        _LOGGER.debug(f"Refreshing state for zone {zone_id}...")
         if not await self._send_command(command): #Send command and check success
             _LOGGER.warning(f"Failed to send state query command for zone {zone_id}.")
-            return
+            return False
 
         expected_responses = [ #List of expected command codes in response
             '01', '02', '03', '04', '05', '06', '07', '0C', '0D', '1C', '1D', '26', '29',
@@ -261,12 +273,39 @@ class AxiumController:
 
         if not responses_received:
             _LOGGER.warning(f"No valid state responses received for zone {zone_id}.")
-            return
+            return False
 
         _LOGGER.debug(f"Received responses for zone {zone_id}: {responses_received.keys()}")
         self._update_state_from_responses(zone_id, responses_received) # Process and update state from collected responses
-        _LOGGER.info(f"Initial state query completed for zone {zone_id}.")
+        
+        # Update entity if needed
+        for zone_to_update in responses_received.keys():
+            if zone_to_update in self._entity_map:
+                await self._entity_map[zone_to_update].async_update_ha_state(True)
+        
+        _LOGGER.debug(f"State refresh completed for zone {zone_id}.")
+        return True
 
+    async def refresh_all_zones(self) -> bool:
+        """
+        Refresh the state of all main zones and their linked pre-out zones.
+        
+        Returns:
+            bool: True if all queries were successful, False if any failed
+        """
+        success = True
+        
+        for zone_id in ZONES.values():
+            if zone_id <= 0x0F:  # Query only main zones, pre-outs are included in response
+                result = await self.refresh_zone_state(zone_id)
+                success = success and result
+                
+        return success
+
+    # Legacy method for backward compatibility
+    async def async_query_zone_state(self, zone_id: int) -> None:
+        """Query all parameters for a zone and update state cache. Use refresh_zone_state instead."""
+        await self.refresh_zone_state(zone_id)
 
     def _decode_response(self, response_bytes):
         """Decodes a byte response to a readable string, showing the hex bytes."""
