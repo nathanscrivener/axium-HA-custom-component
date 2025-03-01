@@ -159,7 +159,7 @@ class AxiumController:
                 current_time = asyncio.get_event_loop().time()
                 recently_sent_command = (
                     self._last_command_time is not None and 
-                    current_time - self._last_command_time < 0.5  # 500ms grace period
+                    current_time - self._last_command_time < 0.3  # Reduced to 300ms grace period
                 )
                 
                 if not recently_sent_command:
@@ -169,7 +169,7 @@ class AxiumController:
                         async with self._read_lock:
                             response_bytes = await asyncio.wait_for(
                                 self._serial_reader.readline(), 
-                                timeout=0.1  # 100ms timeout, we'll loop quickly
+                                timeout=0.05  # Reduced to 50ms timeout for faster response
                             )
                             
                             if response_bytes:
@@ -185,7 +185,7 @@ class AxiumController:
                         _LOGGER.warning(f"Error in monitor loop: {e}")
                 
                 # Small sleep to prevent CPU hogging
-                await asyncio.sleep(0.05)  # 50ms sleep
+                await asyncio.sleep(0.01)  # Reduced to 10ms sleep for more responsive detection
                 
         except asyncio.CancelledError:
             # Task was cancelled - this is normal during shutdown
@@ -210,21 +210,35 @@ class AxiumController:
             zone_hex = decoded_response[1]
             zone_id = int(zone_hex, 16)
             
+            # Log the spontaneous update with more detail
+            _LOGGER.debug(f"Processing spontaneous update: command={command_code}, zone={zone_id}, data={decoded_response}")
+            
             # Create a dictionary structure like what refresh_zone_state uses
             responses = {zone_id: {command_code: decoded_response}}
+            
+            # Handle source switching specifically
+            if command_code == '03' and len(decoded_response) >= 3:  # Source command with enough data
+                source_id = int(decoded_response[2], 16)
+                # Update state cache directly for both the zone and its paired zone
+                self._state_cache.setdefault(zone_id, {})['source'] = source_id
+                
+                # If there's a paired zone, update it too
+                paired_zone = self._zone_mapping.get(zone_id)
+                if paired_zone:
+                    self._state_cache.setdefault(paired_zone, {})['source'] = source_id
+                    # Add the paired zone to the responses to ensure it gets processed
+                    responses[paired_zone] = {command_code: decoded_response}
+                    
+                _LOGGER.info(f"Source change detected: zone={zone_id}, new source={source_id}")
             
             # Update state cache with this response
             self._update_state_from_responses(zone_id, responses)
             
-            # Update the entity in Home Assistant
-            if zone_id in self._entity_map:
-                _LOGGER.debug(f"Spontaneous update received for zone {zone_id}: {decoded_response}")
-                await self._entity_map[zone_id].async_update_ha_state(True)
-                
-            # If this affects a paired zone, update that too
-            paired_zone = self._zone_mapping.get(zone_id)
-            if paired_zone and paired_zone in self._entity_map:
-                await self._entity_map[paired_zone].async_update_ha_state(True)
+            # Update all affected zones in Home Assistant
+            for affected_zone_id in responses.keys():
+                if affected_zone_id in self._entity_map:
+                    _LOGGER.debug(f"Updating entity for zone {affected_zone_id} due to spontaneous update")
+                    await self._entity_map[affected_zone_id].async_update_ha_state(True)
                 
         except Exception as e:
             _LOGGER.warning(f"Error processing spontaneous update: {e}, response: {decoded_response}")
