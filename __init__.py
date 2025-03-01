@@ -12,7 +12,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.config_entries import ConfigEntry
 
 from .controller import AxiumController
-# Don't import services at the module level to avoid circular imports
+# Import services only when needed to avoid circular imports
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,17 +20,6 @@ _LOGGER = logging.getLogger(__name__)
 _LOGGER.info("Axium integration module imported.")
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
-
-# Define Schemas for services
-SERVICE_SCHEMA_BASS_TREBLE = vol.Schema({
-    vol.Required("zone"): vol.In(list(ZONES.keys())),
-    vol.Required("level"): vol.All(int, vol.Range(min=-12, max=12))
-})
-
-SERVICE_SCHEMA_MAX_VOLUME = vol.Schema({
-    vol.Required("zone"): vol.In(list(ZONES.keys())),
-    vol.Required("level"): vol.All(int, vol.Range(min=0, max=160))
-})
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -110,8 +99,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
         # Register services from services.py
-        from .services import async_setup_services
-        await async_setup_services(hass, controller)
+        try:
+            from .services import async_setup_services
+            await async_setup_services(hass, controller)
+        except Exception as service_err:
+            _LOGGER.error(f"Failed to register Axium services: {service_err}", exc_info=True)
+            # Continue setup even if service registration fails
 
         # Set up platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -147,9 +140,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # If no more config entries for this domain, clean up completely
         entries = hass.config_entries.async_entries(DOMAIN)
         if len(entries) == 0:
-            # Unregister services
-            from .services import async_unregister_services
-            await async_unregister_services(hass)
+            try:
+                # Unregister services
+                from .services import async_unregister_services
+                await async_unregister_services(hass)
+            except Exception as service_err:
+                _LOGGER.error(f"Failed to unregister Axium services: {service_err}", exc_info=True)
+                
             # Remove domain data if it exists
             if DOMAIN in hass.data:
                 hass.data.pop(DOMAIN)
