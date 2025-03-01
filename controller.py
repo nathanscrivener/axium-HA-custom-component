@@ -28,6 +28,7 @@ class AxiumController:
         self._response_timeout = 2 # seconds for response timeout
         self.initial_query_complete = asyncio.Event()  # Event to signal completion
         self._entity_map = {}  # {zone_id: entity_instance}
+        self._refresh_task = None  # Task for periodic refresh
 
         # Mapping of main zones to pre-out zones (and vice-versa)
         self._zone_mapping = {}
@@ -63,6 +64,9 @@ class AxiumController:
             self.initial_query_complete.clear()  # Reset the event
             await self.refresh_all_zones()  # Use the new general refresh function
             self.initial_query_complete.set()  # Signal completion
+            
+            # Start periodic refresh task
+            self._start_refresh_task()
 
             return True  # Indicate successful connection
         except Exception as err:
@@ -74,6 +78,9 @@ class AxiumController:
 
     async def disconnect(self) -> None:
         """Explicitly disconnect from the amplifier."""
+        # Cancel the refresh task if it's running
+        self._stop_refresh_task()
+        
         if self._serial_writer:
             try:
                 self._serial_writer.close()
@@ -84,13 +91,48 @@ class AxiumController:
             # The reader will be cleaned up automatically when the writer is closed
             self._serial_reader = None
         self._connected = False
-
+        
+    def _start_refresh_task(self) -> None:
+        """Start the periodic refresh task if not already running."""
+        if self._refresh_task is None or self._refresh_task.done():
+            self._refresh_task = asyncio.create_task(self._refresh_loop())
+            _LOGGER.debug("Started periodic refresh task (every 15 minutes)")
+            
+    def _stop_refresh_task(self) -> None:
+        """Stop the periodic refresh task if running."""
+        if self._refresh_task and not self._refresh_task.done():
+            self._refresh_task.cancel()
+            self._refresh_task = None
+            _LOGGER.debug("Stopped periodic refresh task")
+            
     async def _reconnect(self) -> None:
         """Periodically attempt to reconnect."""
         while True:
             await asyncio.sleep(10)  # Wait 10 seconds between retries
             _LOGGER.debug("Attempting to reconnect to Axium amplifier...")
             await self.connect()  # No try-except here; let connect() handle it
+            
+    async def _refresh_loop(self) -> None:
+        """Periodically refresh all zones every 15 minutes."""
+        try:
+            while True:
+                # Wait for 15 minutes (900 seconds)
+                await asyncio.sleep(900)
+                
+                if not self._connected:
+                    _LOGGER.debug("Periodic refresh skipped - not connected")
+                    continue
+                    
+                try:
+                    _LOGGER.debug("Performing periodic refresh of all zones")
+                    await self.refresh_all_zones()
+                except Exception as e:
+                    _LOGGER.error(f"Error during periodic refresh: {e}")
+        except asyncio.CancelledError:
+            # Task was cancelled - this is normal during shutdown
+            _LOGGER.debug("Periodic refresh task cancelled")
+        except Exception as e:
+            _LOGGER.error(f"Unexpected error in refresh task: {e}")
 
     async def _send_command(self, command_bytes: bytes) -> bool:
         """Send a command to the amplifier, handling connection and errors."""
