@@ -1,6 +1,8 @@
 # Axium Amplifier Integration for Home Assistant
 
-This custom component integrates Axium multi-zone amplifiers with Home Assistant, allowing you to control and monitor your Axium amplifier system.
+This custom component integrates Axium multi-zone amplifiers that use RS232 bus communication with Home Assistant, allowing you to control and monitor your Axium amplifier system.
+
+The complete Axium Bus Protocol is available at https://download.axiumcontrol.com/AxiumCommsProtocol.pdf. 
 
 ## Features
 
