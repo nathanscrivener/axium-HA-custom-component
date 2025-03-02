@@ -458,6 +458,12 @@ class AxiumController:
         command = bytes([0x05, zone, bass_byte])
         if await self._send_command(command):  # Only update cache if command sent
             self._state_cache.setdefault(zone, {})["bass"] = bass_level
+            
+            # Notify callbacks that bass has changed
+            if zone in self._callbacks:
+                for callback in self._callbacks[zone]:
+                    asyncio.create_task(callback())
+                    
             return True
         return False
 
@@ -468,6 +474,12 @@ class AxiumController:
         command = bytes([0x06, zone, treble_byte])
         if await self._send_command(command):  # Only update cache if command sent
             self._state_cache.setdefault(zone, {})["treble"] = treble_level
+            
+            # Notify callbacks that treble has changed
+            if zone in self._callbacks:
+                for callback in self._callbacks[zone]:
+                    asyncio.create_task(callback())
+                    
             return True
         return False
 

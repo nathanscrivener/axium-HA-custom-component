@@ -74,6 +74,9 @@ class AxiumBaseNumber(NumberEntity):
         self._controller = controller
         self._zone_id = zone_id
         self._zone_name = zone_name
+        self._is_user_updating = False  # Track if user is actively changing value
+        self._last_user_value = None    # Track last user-set value
+        self._update_timer = None       # Timer to clear the updating flag
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{zone_id}")},
             name=f"Axium {zone_name}",
@@ -100,13 +103,22 @@ class AxiumBaseNumber(NumberEntity):
         
     async def async_update_callback(self) -> None:
         """Update the entity state when the controller reports a change."""
+        # If a user is actively updating this value, don't override their changes
+        if self._is_user_updating:
+            _LOGGER.debug(f"Ignoring callback update for {self._attr_name} - user is actively updating")
+            return
+            
         # Wait a small delay to allow the state cache to be updated
         await asyncio.sleep(0.1)
         
         # Force a direct state update
+        prev_value = self._attr_native_value
         await self.async_update_native_value()
-        self.async_write_ha_state()
-        _LOGGER.info(f"Callback update completed for {self._attr_name} - zone {self._zone_id}, value: {self._attr_native_value}")
+        
+        # Only trigger a state update if the value actually changed
+        if prev_value != self._attr_native_value:
+            self.async_write_ha_state()
+            _LOGGER.info(f"Callback update completed for {self._attr_name} - zone {self._zone_id}, value: {self._attr_native_value}")
     
     async def async_update_native_value(self) -> None:
         """Update the native value from the controller state."""
@@ -117,6 +129,18 @@ class AxiumBaseNumber(NumberEntity):
         """Handle entity removal from Home Assistant."""
         # Unregister callback
         self._controller.unregister_callback(self.async_update_callback, self._zone_id)
+        
+    async def _clear_updating_flag(self) -> None:
+        """Clear the updating flag after a delay."""
+        await asyncio.sleep(0.5)  # Wait for the amplifier to respond
+        self._is_user_updating = False
+        _LOGGER.debug(f"Cleared updating flag for {self._attr_name}")
+        
+    def _schedule_clear_updating_flag(self) -> None:
+        """Schedule clearing the updating flag."""
+        if self._update_timer:
+            self._update_timer.cancel()
+        self._update_timer = asyncio.create_task(self._clear_updating_flag())
 
 
 class AxiumBassNumber(AxiumBaseNumber):
@@ -150,6 +174,12 @@ class AxiumBassNumber(AxiumBaseNumber):
     async def async_set_native_value(self, value: float) -> None:
         """Set the bass level."""
         _LOGGER.debug(f"Setting bass to {value} for zone {self._zone_id}")
+        
+        # Mark that a user is actively updating this value
+        self._is_user_updating = True
+        self._last_user_value = value
+        self._schedule_clear_updating_flag()
+        
         # Convert zone_id from string to integer if needed
         try:
             if self._zone_id in ZONES:
@@ -158,6 +188,7 @@ class AxiumBassNumber(AxiumBaseNumber):
                 zone_int = int(self._zone_id)
             await self._controller.set_bass(zone_int, int(value))
         except (ValueError, TypeError) as e:
+            self._is_user_updating = False  # Clear flag on error
             _LOGGER.error(f"Error setting bass: {e}. Zone ID: {self._zone_id}, Value: {value}")
 
 
@@ -192,6 +223,12 @@ class AxiumTrebleNumber(AxiumBaseNumber):
     async def async_set_native_value(self, value: float) -> None:
         """Set the treble level."""
         _LOGGER.debug(f"Setting treble to {value} for zone {self._zone_id}")
+        
+        # Mark that a user is actively updating this value
+        self._is_user_updating = True
+        self._last_user_value = value
+        self._schedule_clear_updating_flag()
+        
         # Convert zone_id from string to integer if needed
         try:
             if self._zone_id in ZONES:
@@ -200,4 +237,5 @@ class AxiumTrebleNumber(AxiumBaseNumber):
                 zone_int = int(self._zone_id)
             await self._controller.set_treble(zone_int, int(value))
         except (ValueError, TypeError) as e:
+            self._is_user_updating = False  # Clear flag on error
             _LOGGER.error(f"Error setting treble: {e}. Zone ID: {self._zone_id}, Value: {value}") 
