@@ -153,40 +153,70 @@ class AxiumController:
         changes made by keypads, remote controls, or directly on the amplifier.
         """
         try:
+            # Maintain a small buffer of recently received raw commands for debugging
+            raw_command_buffer = []
+            
             while self._monitoring and self._connected:
                 # Check if we're in the middle of sending a command
-                # If we are, we'll skip monitoring for a short time to avoid
-                # mixing up responses to our commands with spontaneous updates
+                # We'll still read data but mark it differently in logs if it's likely a response
                 current_time = asyncio.get_event_loop().time()
                 recently_sent_command = (
                     self._last_command_time is not None and 
-                    current_time - self._last_command_time < 0.3  # Reduced to 300ms grace period
+                    current_time - self._last_command_time < 0.2  # Reduced to 200ms grace period
                 )
                 
-                if not recently_sent_command:
-                    # Only try to read if we're not expecting a response to a command
-                    try:
-                        # Use a very short timeout to make this non-blocking
-                        async with self._read_lock:
-                            response_bytes = await asyncio.wait_for(
-                                self._serial_reader.readline(), 
-                                timeout=0.05  # Reduced to 50ms timeout for faster response
-                            )
+                # Always try to read data regardless of whether we recently sent a command
+                try:
+                    # Use a very short timeout to make this non-blocking
+                    async with self._read_lock:
+                        response_bytes = await asyncio.wait_for(
+                            self._serial_reader.readline(), 
+                            timeout=0.05  # 50ms timeout for responsiveness
+                        )
+                        
+                        if response_bytes:
+                            # Log all raw data received for debugging
+                            hex_data = response_bytes.hex()
+                            raw_command_buffer.append((current_time, hex_data))
+                            # Keep buffer size reasonable
+                            if len(raw_command_buffer) > 10:
+                                raw_command_buffer.pop(0)
                             
-                            if response_bytes:
-                                # Process the response
-                                decoded_response = self._decode_response(response_bytes)
-                                if decoded_response and len(decoded_response) >= 2:
-                                    # This is a spontaneous update from the amplifier
-                                    await self._process_spontaneous_update(decoded_response)
-                    except asyncio.TimeoutError:
-                        # This is expected, just continue the loop
-                        pass
-                    except Exception as e:
-                        _LOGGER.warning(f"Error in monitor loop: {e}")
+                            source_type = "response" if recently_sent_command else "spontaneous"
+                            _LOGGER.debug(f"Raw data received ({source_type}): {hex_data}")
+                            
+                            # Process the response
+                            decoded_response = self._decode_response(response_bytes)
+                            if decoded_response:
+                                _LOGGER.debug(f"Decoded data: {decoded_response}")
+                                
+                                if len(decoded_response) >= 2:
+                                    # This is a valid update from the amplifier
+                                    if not recently_sent_command:
+                                        # Only process as spontaneous if not during grace period
+                                        await self._process_spontaneous_update(decoded_response)
+                                    else:
+                                        # Log it even if we don't process it
+                                        try:
+                                            command_code = decoded_response[0]
+                                            zone_hex = decoded_response[1]
+                                            zone_id = int(zone_hex, 16)
+                                            _LOGGER.debug(f"Skipping processing of potential response: command={command_code}, zone={zone_id}, data={decoded_response}")
+                                        except Exception:
+                                            _LOGGER.debug(f"Skipping processing of unstructured response: {decoded_response}")
+                                else:
+                                    _LOGGER.debug(f"Response too short to process: {decoded_response}")
+                except asyncio.TimeoutError:
+                    # This is expected, just continue the loop
+                    pass
+                except Exception as e:
+                    _LOGGER.warning(f"Error in monitor loop: {e}")
+                    # If we're having persistent errors, dump the command buffer to help diagnose
+                    if raw_command_buffer:
+                        _LOGGER.warning(f"Recent raw commands: {raw_command_buffer}")
                 
                 # Small sleep to prevent CPU hogging
-                await asyncio.sleep(0.01)  # Reduced to 10ms sleep for more responsive detection
+                await asyncio.sleep(0.01)  # 10ms sleep for responsiveness
                 
         except asyncio.CancelledError:
             # Task was cancelled - this is normal during shutdown
@@ -212,13 +242,20 @@ class AxiumController:
             zone_id = int(zone_hex, 16)
             
             # Log the spontaneous update with more detail
-            _LOGGER.debug(f"Processing spontaneous update: command={command_code}, zone={zone_id}, data={decoded_response}")
+            _LOGGER.info(f"Processing spontaneous update: command={command_code}, zone={zone_id}, data={decoded_response}")
             
             # Create a dictionary structure like what refresh_zone_state uses
             responses = {zone_id: {command_code: decoded_response}}
             
+            # Handle power state specifically
+            if command_code == '01' and len(decoded_response) >= 3:  # Power command
+                power_state_hex = decoded_response[2]
+                power_state = power_state_hex == '01'  # '01' is power on, '00' is standby
+                self._state_cache.setdefault(zone_id, {})['power'] = power_state
+                _LOGGER.info(f"Power change detected: zone={zone_id}, power={'ON' if power_state else 'OFF'}")
+                
             # Handle source switching specifically
-            if command_code == '03' and len(decoded_response) >= 3:  # Source command with enough data
+            elif command_code == '03' and len(decoded_response) >= 3:  # Source command
                 source_id = int(decoded_response[2], 16)
                 # Update state cache directly for both the zone and its paired zone
                 self._state_cache.setdefault(zone_id, {})['source'] = source_id
@@ -231,6 +268,14 @@ class AxiumController:
                     responses[paired_zone] = {command_code: decoded_response}
                     
                 _LOGGER.info(f"Source change detected: zone={zone_id}, new source={source_id}")
+                
+                # If source changes and power is currently off, this might be a keypad "source select" 
+                # button that also powers on the zone - check if we need to update power state
+                zone_state = self._state_cache.get(zone_id, {})
+                if not zone_state.get('power', False):
+                    _LOGGER.info(f"Source changed while zone was off - checking if power state needs updating for zone {zone_id}")
+                    # We might want to do a quick refresh here to confirm the power state
+                    asyncio.create_task(self.refresh_zone_state(zone_id))
             
             # Update state cache with this response
             self._update_state_from_responses(zone_id, responses)
