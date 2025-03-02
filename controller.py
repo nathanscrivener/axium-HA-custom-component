@@ -162,7 +162,7 @@ class AxiumController:
                 current_time = asyncio.get_event_loop().time()
                 recently_sent_command = (
                     self._last_command_time is not None and 
-                    current_time - self._last_command_time < 0.2  # Reduced to 200ms grace period
+                    current_time - self._last_command_time < 0.1  # Reduced to 100ms grace period to better detect keypad commands
                 )
                 
                 # Always try to read data regardless of whether we recently sent a command
@@ -191,8 +191,13 @@ class AxiumController:
                                 _LOGGER.debug(f"Decoded data: {decoded_response}")
                                 
                                 if len(decoded_response) >= 2:
-                                    # This is a valid update from the amplifier
-                                    if not recently_sent_command:
+                                    # Special handling for volume commands - always process them
+                                    if decoded_response[0] in ['04', '11', '12']:
+                                        command_code = decoded_response[0]
+                                        _LOGGER.info(f"Processing volume command regardless of timing: command={command_code}")
+                                        await self._process_spontaneous_update(decoded_response)
+                                    # For other commands, respect the recently_sent_command flag
+                                    elif not recently_sent_command:
                                         # Only process as spontaneous if not during grace period
                                         await self._process_spontaneous_update(decoded_response)
                                     else:
@@ -276,6 +281,89 @@ class AxiumController:
                     _LOGGER.info(f"Source changed while zone was off - checking if power state needs updating for zone {zone_id}")
                     # We might want to do a quick refresh here to confirm the power state
                     asyncio.create_task(self.refresh_zone_state(zone_id))
+            
+            # Handle direct volume level setting
+            elif command_code == '04' and len(decoded_response) >= 3:  # Volume level command
+                volume_hex = decoded_response[2]
+                volume_level_axium = int(volume_hex, 16)
+                self._state_cache.setdefault(zone_id, {})['volume'] = volume_level_axium
+                _LOGGER.info(f"Volume level change detected: zone={zone_id}, new volume={volume_level_axium} (hex: {volume_hex})")
+            
+            # Handle Volume Up command
+            elif command_code == '11':  # Volume Up command
+                _LOGGER.info(f"Volume UP command detected: zone={zone_id}, data={decoded_response}")
+                
+                # Get current volume from state cache or default to 0
+                zone_state = self._state_cache.setdefault(zone_id, {})
+                current_volume = zone_state.get('volume', 0)
+                
+                # Determine steps to adjust volume
+                steps = 1  # Default to 1 step if no parameter
+                if len(decoded_response) >= 3:
+                    try:
+                        # Parse the parameter as a signed byte
+                        param_hex = decoded_response[2]
+                        param_byte = bytes.fromhex(param_hex)
+                        steps = int.from_bytes(param_byte, byteorder='big', signed=True)
+                    except Exception as e:
+                        _LOGGER.warning(f"Error parsing volume up parameter: {e}")
+                
+                # Negative steps mean volume down
+                if steps < 0:
+                    new_volume = max(current_volume + steps, 0)  # Ensure volume doesn't go below 0
+                    _LOGGER.info(f"Volume down via negative parameter: zone={zone_id}, steps={steps}, old={current_volume}, new={new_volume}")
+                else:
+                    new_volume = min(current_volume + steps, 160)  # Ensure volume doesn't exceed 160 (A0h)
+                    _LOGGER.info(f"Volume up: zone={zone_id}, steps={steps}, old={current_volume}, new={new_volume}")
+                
+                # Update the volume in state cache
+                zone_state['volume'] = new_volume
+                
+                # Add a volume level command to the responses to ensure it gets processed properly
+                volume_response = ['04', zone_hex, f"{new_volume:02X}"]
+                responses[zone_id]['04'] = volume_response
+                
+                # Trigger an immediate refresh for this zone to ensure we have the latest state
+                _LOGGER.info(f"Triggering refresh for zone {zone_id} after volume up command")
+                asyncio.create_task(self.refresh_zone_state(zone_id))
+            
+            # Handle Volume Down command
+            elif command_code == '12':  # Volume Down command
+                _LOGGER.info(f"Volume DOWN command detected: zone={zone_id}, data={decoded_response}")
+                
+                # Get current volume from state cache or default to 0
+                zone_state = self._state_cache.setdefault(zone_id, {})
+                current_volume = zone_state.get('volume', 0)
+                
+                # Determine steps to adjust volume
+                steps = 1  # Default to 1 step if no parameter
+                if len(decoded_response) >= 3:
+                    try:
+                        # Parse the parameter as a signed byte
+                        param_hex = decoded_response[2]
+                        param_byte = bytes.fromhex(param_hex)
+                        steps = int.from_bytes(param_byte, byteorder='big', signed=True)
+                    except Exception as e:
+                        _LOGGER.warning(f"Error parsing volume down parameter: {e}")
+                
+                # Negative steps mean volume up
+                if steps < 0:
+                    new_volume = min(current_volume - steps, 160)  # Ensure volume doesn't exceed 160 (A0h)
+                    _LOGGER.info(f"Volume up via negative parameter: zone={zone_id}, steps={steps}, old={current_volume}, new={new_volume}")
+                else:
+                    new_volume = max(current_volume - steps, 0)  # Ensure volume doesn't go below 0
+                    _LOGGER.info(f"Volume down: zone={zone_id}, steps={steps}, old={current_volume}, new={new_volume}")
+                
+                # Update the volume in state cache
+                zone_state['volume'] = new_volume
+                
+                # Add a volume level command to the responses to ensure it gets processed properly
+                volume_response = ['04', zone_hex, f"{new_volume:02X}"]
+                responses[zone_id]['04'] = volume_response
+                
+                # Trigger an immediate refresh for this zone to ensure we have the latest state
+                _LOGGER.info(f"Triggering refresh for zone {zone_id} after volume down command")
+                asyncio.create_task(self.refresh_zone_state(zone_id))
             
             # Update state cache with this response
             self._update_state_from_responses(zone_id, responses)
@@ -610,10 +698,21 @@ class AxiumController:
         try:
             # Decode the ASCII hex encoded values
             response_str = response_bytes.strip().decode('ascii', errors='ignore')
+            
+            # Enhanced logging for raw response
+            _LOGGER.debug(f"Raw response string: {response_str}")
+            
+            # Check if this might be multiple commands concatenated
+            # Most commands are 6 characters (3 bytes in hex), but we'll be more flexible
             decoded_bytes = [response_str[i:i+2] for i in range(0, len(response_str), 2)] #Keep as hex strings for parsing
+            
+            # Enhanced debug logging for decoded bytes
+            if len(decoded_bytes) > 6:  # If longer than a typical command
+                _LOGGER.info(f"Potentially long command received: {decoded_bytes}")
+            
             return decoded_bytes
-        except ValueError:
-            _LOGGER.warning(f"Invalid response encoding: {response_bytes}")
+        except ValueError as e:
+            _LOGGER.warning(f"Invalid response encoding: {response_bytes}, error: {e}")
             return None # Indicate decoding failure
 
     def _update_state_from_responses(self, main_zone_id, responses): #responses is now nested dict
