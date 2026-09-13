@@ -26,7 +26,11 @@ EXCLUDES=(
 )
 
 # Clean strays from previous deploys
-rm -rf "${DEST}/__pycache__" "${DEST}/.cursor" "${DEST}/~"
+# __pycache__ is written by the HA container (root-owned) — clean it via docker if possible
+rm -rf "${DEST}/.cursor" "${DEST}/~" 2>/dev/null || true
+docker exec home-assistant rm -rf /config/custom_components/axium/__pycache__ 2>/dev/null \
+  || rm -rf "${DEST}/__pycache__" 2>/dev/null \
+  || echo "NOTE: could not clear __pycache__ (harmless — stale bytecode is ignored when source is newer)"
 
 # Copy component files (only the integration payloads)
 for f in "${SRC}"/*.py "${SRC}"/manifest.json; do
