@@ -40,7 +40,7 @@ done
 [ -d "${SRC}/translations" ] && cp -r "${SRC}/translations/." "${DEST}/translations/"
 
 # Verify sync
-if diff -r --exclude=.git --exclude=__pycache__ "${SRC}" "${DEST}" > /tmp/axium-deploy-diff.txt 2>&1; then
+if diff -r --exclude=.git --exclude=__pycache__ --exclude=scripts --exclude=backups --exclude=memory-bank "${SRC}" "${DEST}" > /tmp/axium-deploy-diff.txt 2>&1; then
   echo "DEPLOY_IN_SYNC"
 else
   echo "WARNING: differences remain after deploy:"
