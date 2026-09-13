@@ -277,6 +277,28 @@ class AxiumController:
                     # We might want to do a quick refresh here to confirm the power state
                     asyncio.create_task(self.refresh_zone_state(zone_id))
             
+            # Handle volume changes specifically
+            elif command_code == '04' and len(decoded_response) >= 3:  # Volume command
+                volume_level = int(decoded_response[2], 16)
+                # Update state cache directly
+                self._state_cache.setdefault(zone_id, {})['volume'] = volume_level
+                
+                # If there's a paired zone, update it too (optional, depending on your needs)
+                paired_zone = self._zone_mapping.get(zone_id)
+                if paired_zone:
+                    self._state_cache.setdefault(paired_zone, {})['volume'] = volume_level
+                    # Add the paired zone to the responses to ensure it gets processed
+                    responses[paired_zone] = {command_code: decoded_response}
+                
+                _LOGGER.debug(f"Volume change detected: zone={zone_id}, new volume={volume_level}")
+                
+                # Check if entity is registered and log its details
+                if zone_id in self._entity_map:
+                    entity = self._entity_map[zone_id]
+                    _LOGGER.debug(f"Found registered entity for zone {zone_id}: {entity}, will update state")
+                else:
+                    _LOGGER.warning(f"No entity registered for zone {zone_id}, state update may not reflect in Home Assistant")
+            
             # Update state cache with this response
             self._update_state_from_responses(zone_id, responses)
             
@@ -290,16 +312,26 @@ class AxiumController:
                 # Update the entity if registered
                 if affected_zone_id in self._entity_map:
                     _LOGGER.debug(f"Updating entity for zone {affected_zone_id} due to spontaneous update")
+                    # Get the state before updating to compare
+                    entity = self._entity_map[affected_zone_id]
+                    _LOGGER.debug(f"Entity for zone {affected_zone_id} before update: state={entity.state}, volume={entity.volume_level if hasattr(entity, 'volume_level') else 'N/A'}")
+                    
                     await self._entity_map[affected_zone_id].async_update_ha_state(True)
+                    
+                    # Log after update to see if anything changed
+                    _LOGGER.debug(f"Entity for zone {affected_zone_id} after update: state={entity.state}, volume={entity.volume_level if hasattr(entity, 'volume_level') else 'N/A'}")
                 
                 # Notify callbacks - directly using the integer zone_id
                 if affected_zone_id in self._callbacks:
-                    _LOGGER.debug(f"Triggering {len(self._callbacks[affected_zone_id])} callbacks for zone {affected_zone_id}")
-                    for callback in self._callbacks[affected_zone_id]:
+                    callbacks_count = len(self._callbacks[affected_zone_id])
+                    _LOGGER.debug(f"Triggering {callbacks_count} callbacks for zone {affected_zone_id}")
+                    for i, callback in enumerate(self._callbacks[affected_zone_id]):
                         try:
+                            _LOGGER.debug(f"Running callback {i+1}/{callbacks_count} for zone {affected_zone_id}")
                             await callback()
+                            _LOGGER.debug(f"Callback {i+1}/{callbacks_count} completed successfully")
                         except Exception as callback_error:
-                            _LOGGER.warning(f"Error in callback for zone {affected_zone_id}: {callback_error}")
+                            _LOGGER.warning(f"Error in callback {i+1}/{callbacks_count} for zone {affected_zone_id}: {callback_error}")
                 else:
                     _LOGGER.debug(f"No callbacks registered for zone {affected_zone_id}")
                 

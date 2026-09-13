@@ -148,6 +148,9 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
             self._force_refresh = False
 
         state = await self._controller.async_get_zone_state(self._zone_id)
+        
+        # Log the raw state for debugging
+        _LOGGER.debug(f"AxiumZone async_update raw state for {self._zone_id_name} (ID: {self._zone_id}): {state}")
 
         # Check if this is a pre-out zone.  If so, get source from main zone.
         if self._zone_id in self._controller._zone_mapping.values():
@@ -158,6 +161,9 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
                     state["source"] = main_zone_state.get("source")
 
         if state:
+            # Record previous values for comparison
+            prev_volume_level = self._attr_volume_level
+        
             # ALWAYS update ALL attributes from the cached state.
             self._attr_state = STATE_ON if state.get("power") else STATE_OFF
             current_volume = state.get("volume", 0) #Get raw axium volume
@@ -169,6 +175,10 @@ class AxiumZone(MediaPlayerEntity, RestoreEntity):
                 self._attr_volume_level = perceptual_to_linear_volume(linear_volume) # Apply inverse perceptual scaling for display
             else:
                 self._attr_volume_level = 0 # Fallback if max_volume is invalid
+
+            # Log volume changes for debugging
+            if prev_volume_level != self._attr_volume_level:
+                _LOGGER.debug(f"Volume changed for {self._zone_id_name}: {prev_volume_level} → {self._attr_volume_level} (raw: {current_volume}/{max_volume})")
 
             self._attr_is_volume_muted = state.get("mute", False)
             source_id = state.get("source")
